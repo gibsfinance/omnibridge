@@ -2247,7 +2247,7 @@ function runTests(isHome: boolean) {
         const contracts = await getCompoundContracts()
         if (!(await contracts.comptroller.getDeployedCode())) {
           console.log('compound contracts missing');
-          this.skip()
+          return
         }
         faucet = signers[6]
         dai = contracts.dai
@@ -2283,7 +2283,8 @@ function runTests(isHome: boolean) {
         await cDai.connect(faucet).repayBorrow(ethers.parseEther('20'))
       }
 
-      it('should initialize interest', async () => {
+      it('should initialize interest', async function () {
+        if (!faucet) this.skip()
         await expect(dai.balanceOf(contract)).eventually.to.equal(ethers.parseEther('10'))
         await expect(foreignOmnibridge.interestImplementation(dai)).eventually.to.equal(setup.ZERO_ADDRESS)
         const args = [await dai.getAddress(), await daiInterestImpl.getAddress(), oneEther] as [AddressLike, AddressLike, BigNumberish]
@@ -2295,7 +2296,8 @@ function runTests(isHome: boolean) {
         await expect(foreignOmnibridge.minCashThreshold(dai)).eventually.to.equal(oneEther)
       })
 
-      it('should enable and earn interest', async () => {
+      it('should enable and earn interest', async function () {
+        if (!faucet) this.skip()
         const initialBalance = await dai.balanceOf(signers[2])
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await expect(daiInterestImpl.interestAmount.staticCall(dai)).eventually.to.equal(0n)
@@ -2309,7 +2311,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.interestAmount.staticCall(dai)).eventually.to.be.gt(0)
       })
 
-      it('should pay interest', async () => {
+      it('should pay interest', async function () {
+        if (!faucet) this.skip()
         const initialBalance = await dai.balanceOf(signers[2])
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
@@ -2322,7 +2325,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.interestAmount.staticCall(dai)).eventually.to.be.lt(ethers.parseEther('0.01') as unknown as number)
       })
 
-      it('should disable interest', async () => {
+      it('should disable interest', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
         await generateInterest()
@@ -2335,7 +2339,8 @@ function runTests(isHome: boolean) {
         await expect(cDai.balanceOf(daiInterestImpl)).eventually.to.be.gt(0n as unknown as number)
       })
 
-      it('configuration', async () => {
+      it('configuration', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await expect(foreignOmnibridge.connect(user).setMinCashThreshold(dai, ethers.parseEther('2'))).to.be.rejected
         await foreignOmnibridge.connect(owner).setMinCashThreshold(dai, ethers.parseEther('2'))
@@ -2360,7 +2365,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.compReceiver()).eventually.to.equal(await user.getAddress())
       })
 
-      it('should claim comp', async () => {
+      it('should claim comp', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
         await generateInterest()
@@ -2371,7 +2377,8 @@ function runTests(isHome: boolean) {
         await expect(comp.balanceOf(signers[2])).eventually.to.be.gt(initialBalance as unknown as number)
       })
 
-      it('should return invested tokens on withdrawal if needed', async () => {
+      it('should return invested tokens on withdrawal if needed', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
         await expect(dai.balanceOf(contract)).eventually.to.equal(ethers.parseEther('1'))
@@ -2397,7 +2404,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.investedAmount(dai)).eventually.to.equal(ethers.parseEther('6.5'))
       })
 
-      it('should allow to fix correct amount of tokens when compound is used', async () => {
+      it('should allow to fix correct amount of tokens when compound is used', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
         await expect(dai.balanceOf(contract)).eventually.to.equal(ethers.parseEther('1'))
@@ -2413,7 +2421,8 @@ function runTests(isHome: boolean) {
         await expect(contract.mediatorBalance(dai)).eventually.to.equal(ethers.parseEther('11'))
       })
 
-      it('should force disable interest implementation', async () => {
+      it('should force disable interest implementation', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
         await expect(dai.balanceOf(contract)).eventually.to.equal(ethers.parseEther('1'))
@@ -2426,7 +2435,8 @@ function runTests(isHome: boolean) {
         await expect(contract.mediatorBalance(dai)).eventually.to.equal(ethers.parseEther('10'))
       })
 
-      it('should allow to reinitialize when there are no invested funds', async () => {
+      it('should allow to reinitialize when there are no invested funds', async function () {
+        if (!faucet) this.skip()
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
         await generateInterest()
@@ -2453,7 +2463,7 @@ function runTests(isHome: boolean) {
         const contracts = await getAAVEContracts(hre, signers[8])
         if (!(await contracts.aave.getDeployedCode())) {
           console.log('aave contracts missing')
-          this.skip()
+          return
         }
         borrower = signers[2]
         dai = contracts.dai
@@ -2496,7 +2506,8 @@ function runTests(isHome: boolean) {
         await lendingPool.repay(dai, ethers.parseEther('1000000'), 1, borrower); // repay whole debt
       }
 
-      it('should initialize interest', async () => {
+      it('should initialize interest', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await expect(dai.balanceOf(contract)).eventually.to.equal(ethers.parseEther('10'))
         await expect(foreignOmnibridge.interestImplementation(dai)).eventually.to.equal(setup.ZERO_ADDRESS)
@@ -2509,7 +2520,8 @@ function runTests(isHome: boolean) {
         await expect(foreignOmnibridge.minCashThreshold(await dai.getAddress())).eventually.to.equal(oneEther)
       })
 
-      it('should enable and earn interest', async () => {
+      it('should enable and earn interest', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         const initialBalance = await dai.balanceOf(signers[2])
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
@@ -2524,7 +2536,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.interestAmount.staticCall(dai)).eventually.to.be.gt(0n as unknown as number)
       })
 
-      it('should pay interest', async () => {
+      it('should pay interest', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         const initialBalance = await dai.balanceOf(signers[2])
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
@@ -2538,7 +2551,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.interestAmount.staticCall(dai)).eventually.to.be.lt(ethers.parseEther('0.01') as unknown as number)
       })
 
-      it('should disable interest', async () => {
+      it('should disable interest', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
@@ -2551,7 +2565,8 @@ function runTests(isHome: boolean) {
         await expect(dai.balanceOf(contract)).eventually.to.equal(ethers.parseEther('10'))
       })
 
-      it('configuration', async () => {
+      it('configuration', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await expect(foreignOmnibridge.connect(user).setMinCashThreshold(dai, ethers.parseEther('2'))).to.be.rejected
@@ -2577,7 +2592,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.aaveReceiver()).eventually.to.equal(user)
       })
 
-      it('should return invested tokens on withdrawal if needed', async () => {
+      it('should return invested tokens on withdrawal if needed', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
@@ -2604,7 +2620,8 @@ function runTests(isHome: boolean) {
         await expect(daiInterestImpl.investedAmount(dai)).eventually.to.equal(ethers.parseEther('6.5'))
       })
 
-      it('should allow to fix correct amount of tokens when aave is used', async () => {
+      it('should allow to fix correct amount of tokens when aave is used', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
@@ -2621,7 +2638,8 @@ function runTests(isHome: boolean) {
         await expect(contract.mediatorBalance(dai)).eventually.to.equal(ethers.parseEther('11'))
       })
 
-      it('should force disable interest implementation', async () => {
+      it('should force disable interest implementation', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
@@ -2635,7 +2653,8 @@ function runTests(isHome: boolean) {
         await expect(contract.mediatorBalance(dai)).eventually.to.equal(ethers.parseEther('10'))
       })
 
-      it('should allow to reinitialize when there are no invested funds', async () => {
+      it('should allow to reinitialize when there are no invested funds', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await foreignOmnibridge.initializeInterest(dai, daiInterestImpl, oneEther)
         await foreignOmnibridge.invest(dai)
@@ -2647,7 +2666,8 @@ function runTests(isHome: boolean) {
         await foreignOmnibridge.invest(dai)
       })
 
-      it('should claim rewards', async () => {
+      it('should claim rewards', async function () {
+        if (!borrower) this.skip()
         const foreignOmnibridge = contract as ForeignOmnibridge
         await aave.mint(ethers.parseEther('20000000'))
         await aave.transfer(incentivesController, ethers.parseEther('10000000'))
