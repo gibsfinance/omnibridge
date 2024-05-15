@@ -26,9 +26,6 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - uses: c-hive/gha-npm-cache@v2
-        name: Cache dependencies
-
       - name: Install dependencies
         run: npm ci # switch to `npm ci` when Node.js 6 support is dropped
 
@@ -36,7 +33,7 @@ jobs:
         run: npm run compile
 
       - name: Run tests
-        run: npm run coverage
+        run: npm run test
 
       - name: Coveralls
         uses: coverallsapp/github-action@master
