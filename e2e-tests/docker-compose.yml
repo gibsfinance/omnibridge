@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   home:
     image: trufflesuite/ganache-cli
@@ -25,7 +24,7 @@ services:
       context: ..
       dockerfile: Dockerfile.dev
     env_file: local-envs/tests.env
-    entrypoint: node e2e-tests/run.js
+    entrypoint: npx ts-node e2e-tests/run.js
   rabbit:
     environment: ['RABBITMQ_NODENAME=node@rabbit']
     hostname: rabbit
@@ -37,20 +36,20 @@ services:
   bridge_request:
     image: poanetwork/tokenbridge-oracle:latest
     env_file: local-envs/oracle.env
-    entrypoint: yarn watcher:signature-request
+    entrypoint: npm run watcher:signature-request
   bridge_collected:
     image: poanetwork/tokenbridge-oracle:latest
     env_file: local-envs/oracle.env
-    entrypoint: yarn watcher:collected-signatures
+    entrypoint: npm run watcher:collected-signatures
   bridge_affirmation:
     image: poanetwork/tokenbridge-oracle:latest
     env_file: local-envs/oracle.env
-    entrypoint: yarn watcher:affirmation-request
+    entrypoint: npm run watcher:affirmation-request
   bridge_senderhome:
     image: poanetwork/tokenbridge-oracle:latest
     env_file: local-envs/oracle.env
-    entrypoint: yarn sender:home
+    entrypoint: npm run sender:home
   bridge_senderforeign:
     image: poanetwork/tokenbridge-oracle:latest
     env_file: local-envs/oracle.env
-    entrypoint: yarn sender:foreign
+    entrypoint: npm run sender:foreign

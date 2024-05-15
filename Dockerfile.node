@@ -1,0 +1,9 @@
+FROM node:20.11.1
+
+COPY package.json ./
+RUN npm i
+
+COPY hardhat.config.ts hardhat.config.ts
+COPY ./tsconfig.json ./
+
+CMD ["npx", "hardhat", "node"]

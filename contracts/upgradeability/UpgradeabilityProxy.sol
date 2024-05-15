@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/utils/Address.sol";
 import "./Proxy.sol";
@@ -27,20 +28,20 @@ contract UpgradeabilityProxy is Proxy, UpgradeabilityStorage {
     /**
      * @dev Upgrades the implementation address
      * @param version representing the version name of the new implementation to be set
-     * @param implementation representing the address of the new implementation to be set
+     * @param impl representing the address of the new implementation to be set
      */
-    function _upgradeTo(uint256 version, address implementation) internal {
-        require(_implementation != implementation);
+    function _upgradeTo(uint256 version, address impl) internal {
+        require(_implementation != impl);
 
         // This additional check verifies that provided implementation is at least a contract
-        require(Address.isContract(implementation));
+        require(impl.code.length > 0);
 
         // This additional check guarantees that new version will be at least greater than the previous one,
         // so it is impossible to reuse old versions, or use the last version twice
         require(version > _version);
 
         _version = version;
-        _implementation = implementation;
-        emit Upgraded(version, implementation);
+        _implementation = impl;
+        emit Upgraded(version, impl);
     }
 }

@@ -3,7 +3,7 @@
 if [ -f /.dockerenv ]; then
   # the script is run within the container
   echo "Omnibridge contract deployment started"
-  yarn deploy
+  npm run deploy
   rc=$?
   if [ -f bridgeDeploymentResults.json ]; then
     cat bridgeDeploymentResults.json

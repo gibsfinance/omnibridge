@@ -1,7 +1,8 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../../../interfaces/ICToken.sol";
 import "../../../interfaces/IComptroller.sol";
 import "../../../interfaces/IOwnable.sol";
@@ -14,7 +15,6 @@ import "./BaseInterestERC20.sol";
  * @dev This contract contains token-specific logic for investing ERC20 tokens into Compound protocol.
  */
 contract CompoundInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
-    using SafeMath for uint256;
     using SafeERC20 for IERC20;
     using SafeERC20 for ICToken;
 
@@ -81,7 +81,7 @@ contract CompoundInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
 
         // SafeERC20.safeApprove does not work here in case of possible interest reinitialization,
         // since it does not allow positive->positive allowance change. However, it would be safe to make such change here.
-        ILegacyERC20(token).approve(address(_cToken), uint256(-1));
+        ILegacyERC20(token).approve(address(_cToken), type(uint256).max);
 
         emit InterestEnabled(token, address(_cToken));
         emit InterestDustUpdated(token, _dust);
@@ -130,7 +130,7 @@ contract CompoundInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
      */
     function invest(address _token, uint256 _amount) external override onlyMediator {
         InterestParams storage params = interestParams[_token];
-        params.investedAmount = params.investedAmount.add(_amount);
+        params.investedAmount = params.investedAmount + _amount;
         require(params.cToken.mint(_amount) == SUCCESS);
     }
 
@@ -159,7 +159,7 @@ contract CompoundInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
         (ICToken cToken, uint96 dust) = (params.cToken, params.dust);
         uint256 balance = cToken.balanceOfUnderlying(address(this));
         // small portion of tokens are reserved for possible truncation/round errors
-        uint256 reserved = params.investedAmount.add(dust);
+        uint256 reserved = params.investedAmount + dust;
         return balance > reserved ? balance - reserved : 0;
     }
 
@@ -220,7 +220,7 @@ contract CompoundInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
 
         uint256 balance = IERC20(_token).balanceOf(address(this));
         IERC20(_token).safeTransfer(mediator, balance);
-        IERC20(_token).safeApprove(address(cToken), 0);
+        IERC20(_token).approve(address(cToken), 0);
 
         emit ForceDisable(_token, balance, cTokenBalance, params.investedAmount);
 

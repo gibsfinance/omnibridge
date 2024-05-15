@@ -1,24 +1,24 @@
-FROM node:14 as contracts
+FROM node:20.11.1 as contracts
 
 WORKDIR /contracts
 
-COPY package.json yarn.lock ./
-RUN yarn
+COPY package.json package-lock.json ./
+RUN npm i
 
-COPY truffle-config.js truffle-config.js
+COPY hardhat.config.ts hardhat.config.ts
 COPY ./precompiled ./precompiled
 COPY ./contracts ./contracts
-RUN yarn compile
+RUN npm run compile
 
 COPY flatten.sh flatten.sh
-RUN yarn flatten
+RUN npm run flatten
 
-FROM node:14
+FROM node:20.11.1
 
 WORKDIR /contracts
 
-COPY package.json yarn.lock ./
-RUN yarn install --prod
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY --from=contracts /contracts/build ./build
 COPY --from=contracts /contracts/flats ./flats

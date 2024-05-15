@@ -1,6 +1,6 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/math/SafeMath.sol";
 import "../../../upgradeability/EternalStorage.sol";
 import "../../Ownable.sol";
 
@@ -9,8 +9,6 @@ import "../../Ownable.sol";
  * @dev Functionality for keeping track of bridging limits for multiple tokens.
  */
 contract TokensBridgeLimits is EternalStorage, Ownable {
-    using SafeMath for uint256;
-
     // token == 0x00..00 represents default limits (assuming decimals == 18) for all newly created tokens
     event DailyLimitChanged(address indexed token, uint256 newLimit);
     event ExecutionDailyLimitChanged(address indexed token, uint256 newLimit);
@@ -96,7 +94,7 @@ contract TokensBridgeLimits is EternalStorage, Ownable {
      * @return true, if specified amount can be bridged.
      */
     function withinLimit(address _token, uint256 _amount) public view returns (bool) {
-        uint256 nextLimit = totalSpentPerDay(_token, getCurrentDay()).add(_amount);
+        uint256 nextLimit = totalSpentPerDay(_token, getCurrentDay()) + _amount;
         return
             dailyLimit(address(0)) > 0 &&
             dailyLimit(_token) >= nextLimit &&
@@ -111,7 +109,7 @@ contract TokensBridgeLimits is EternalStorage, Ownable {
      * @return true, if specified amount can be processed and executed.
      */
     function withinExecutionLimit(address _token, uint256 _amount) public view returns (bool) {
-        uint256 nextLimit = totalExecutedPerDay(_token, getCurrentDay()).add(_amount);
+        uint256 nextLimit = totalExecutedPerDay(_token, getCurrentDay()) + _amount;
         return
             executionDailyLimit(address(0)) > 0 &&
             executionDailyLimit(_token) >= nextLimit &&
@@ -212,9 +210,8 @@ contract TokensBridgeLimits is EternalStorage, Ownable {
         uint256 _day,
         uint256 _value
     ) internal {
-        uintStorage[keccak256(abi.encodePacked("totalSpentPerDay", _token, _day))] = totalSpentPerDay(_token, _day).add(
-            _value
-        );
+        uintStorage[keccak256(abi.encodePacked("totalSpentPerDay", _token, _day))] = (totalSpentPerDay(_token, _day) +
+            _value);
     }
 
     /**
@@ -228,11 +225,9 @@ contract TokensBridgeLimits is EternalStorage, Ownable {
         uint256 _day,
         uint256 _value
     ) internal {
-        uintStorage[keccak256(abi.encodePacked("totalExecutedPerDay", _token, _day))] = totalExecutedPerDay(
-            _token,
-            _day
-        )
-            .add(_value);
+        uintStorage[keccak256(abi.encodePacked("totalExecutedPerDay", _token, _day))] =
+            totalExecutedPerDay(_token, _day) +
+            _value;
     }
 
     /**
@@ -278,11 +273,11 @@ contract TokensBridgeLimits is EternalStorage, Ownable {
         if (_decimals < 18) {
             factor = 10**(18 - _decimals);
 
-            uint256 _minPerTx = minPerTx(address(0)).div(factor);
-            uint256 _maxPerTx = maxPerTx(address(0)).div(factor);
-            uint256 _dailyLimit = dailyLimit(address(0)).div(factor);
-            uint256 _executionMaxPerTx = executionMaxPerTx(address(0)).div(factor);
-            uint256 _executionDailyLimit = executionDailyLimit(address(0)).div(factor);
+            uint256 _minPerTx = minPerTx(address(0)) / factor;
+            uint256 _maxPerTx = maxPerTx(address(0)) / factor;
+            uint256 _dailyLimit = dailyLimit(address(0)) / factor;
+            uint256 _executionMaxPerTx = executionMaxPerTx(address(0)) / factor;
+            uint256 _executionDailyLimit = executionDailyLimit(address(0)) / factor;
 
             // such situation can happen when calculated limits relative to the token decimals are too low
             // e.g. minPerTx(address(0)) == 10 ** 14, _decimals == 3. _minPerTx happens to be 0, which is not allowed.
@@ -307,11 +302,11 @@ contract TokensBridgeLimits is EternalStorage, Ownable {
             factor = 10**(_decimals - 18);
             _setLimits(
                 _token,
-                [dailyLimit(address(0)).mul(factor), maxPerTx(address(0)).mul(factor), minPerTx(address(0)).mul(factor)]
+                [dailyLimit(address(0)) * factor, maxPerTx(address(0)) * factor, minPerTx(address(0)) * factor]
             );
             _setExecutionLimits(
                 _token,
-                [executionDailyLimit(address(0)).mul(factor), executionMaxPerTx(address(0)).mul(factor)]
+                [executionDailyLimit(address(0)) * factor, executionMaxPerTx(address(0)) * factor]
             );
         }
     }

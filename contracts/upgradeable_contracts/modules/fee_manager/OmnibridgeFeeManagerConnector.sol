@@ -1,6 +1,7 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../../../interfaces/IBurnableMintableERC677Token.sol";
 import "../../../libraries/SafeMint.sol";
 import "../../Ownable.sol";
@@ -42,7 +43,7 @@ abstract contract OmnibridgeFeeManagerConnector is Ownable {
      * @param _feeManager address of fee manager contract.
      */
     function _setFeeManager(address _feeManager) internal {
-        require(_feeManager == address(0) || Address.isContract(_feeManager));
+        require(_feeManager == address(0) || _feeManager.code.length > 0);
         addressStorage[FEE_MANAGER_CONTRACT] = _feeManager;
     }
 

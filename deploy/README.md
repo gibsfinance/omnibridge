@@ -1,11 +1,11 @@
 # How to Deploy POA Bridge Contracts
 
-In order to deploy bridge contracts you must run `yarn` to install all dependencies. For more information, see the [project README](../README.md).
+In order to deploy bridge contracts you must run `npm i` to install all dependencies. For more information, see the [project README](../README.md).
 
 1. Compile the source contracts.
 ```
 cd ..
-yarn compile
+npm run compile
 ```
 
 2. Create a `.env` file.

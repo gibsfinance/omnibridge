@@ -1,14 +1,21 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 // solhint-disable
 interface ITokenDetails {
     function name() external view;
+
     function NAME() external view;
+
     function symbol() external view;
+
     function SYMBOL() external view;
+
     function decimals() external view;
+
     function DECIMALS() external view;
 }
+
 // solhint-enable
 
 /**
@@ -85,7 +92,12 @@ library TokenReader {
                 mstore(add(res, 32), data) // save value in result string
 
                 // solhint-disable
-                for { } gt(data, 0) { len := add(len, 1) } { // until string is empty
+                for {
+
+                } gt(data, 0) {
+                    len := add(len, 1)
+                } {
+                    // until string is empty
                     data := shl(8, data) // shift left by one symbol
                 }
                 // solhint-enable

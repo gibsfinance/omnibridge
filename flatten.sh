@@ -6,7 +6,7 @@ fi
 
 mkdir -p flats/upgradeability
 
-FLATTENER=./node_modules/.bin/truffle-flattener
+FLATTENER="./node_modules/.bin/hardhat flatten"
 BRIDGE_CONTRACTS_DIR=contracts/upgradeable_contracts
 
 echo "Flattening common bridge contracts"
@@ -24,8 +24,9 @@ ${FLATTENER} ${BRIDGE_CONTRACTS_DIR}/modules/interest/CompoundInterestERC20.sol 
 ${FLATTENER} ${BRIDGE_CONTRACTS_DIR}/modules/interest/AAVEInterestERC20.sol > flats/AAVEInterestERC20_flat.sol
 
 echo "Flattening token contracts"
-cp ./precompiled/PermittableToken_flat.sol flats
+cp ./precompiled/PermittableToken_flat.sol flats/PermittableToken_flat.sol
 
-for file in flats/*.sol; do
-  grep -v SPDX "$file" > tmp; mv tmp "$file"
-done
+# echo "checking flattened spdx"
+# for file in flats/*.sol; do
+#   grep -v SPDX "$file" > tmp; mv tmp "$file"
+# done

@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/utils/Address.sol";
 import "../../Ownable.sol";
@@ -33,7 +34,7 @@ contract MultiTokenForwardingRulesConnector is Ownable {
      * @param _manager address of forwarding rules manager contract.
      */
     function _setForwardingRulesManager(address _manager) internal {
-        require(_manager == address(0) || Address.isContract(_manager));
+        require(_manager == address(0) || _manager.code.length > 0);
         addressStorage[FORWARDING_RULES_MANAGER_CONTRACT] = _manager;
     }
 

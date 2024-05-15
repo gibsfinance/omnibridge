@@ -1,8 +1,7 @@
-version: '3.8'
 services:
   e2e-tests:
     build:
       context: ..
       dockerfile: Dockerfile.dev
     env_file: .env
-    entrypoint: node e2e-tests/run.js
+    entrypoint: npx ts-node e2e-tests/run.js

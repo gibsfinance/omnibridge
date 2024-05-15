@@ -1,8 +1,5 @@
-const IERC20 = artifacts.require('IERC20')
-const IMintableERC20 = artifacts.require('IMintableERC20')
-const ILendingPool = artifacts.require('ILendingPool')
-const IStakedAave = artifacts.require('IStakedAave')
-const IStakedTokenIncentivesController = artifacts.require('IStakedTokenIncentivesController')
+import { HardhatRuntimeEnvironment } from 'hardhat/types'
+import { TransactionReceipt, ethers } from 'ethers'
 
 // from https://etherscan.io/address/0xe42f02713aec989132c1755117f768dbea523d2f#code
 const stkAAVEBytecode =
@@ -29,23 +26,23 @@ const managerBytecode =
   '0000000000000000000000004da27a545c0c5b758a6ba100e3a049001de870f5' + // stake token (replaced in runtime)
   '00000000000000000000000090F8bf6A479f320ead074411a4B0e7944Ea8c9C1' // emission manager (changed to accounts[0] address)
 
-async function getAAVEContracts(web3, from) {
-  const dai = await IMintableERC20.at('0xe78A0F7E598Cc8b0Bb87894B0F60dD2a88d6a8Ab')
-  const usdc = await IMintableERC20.at('0xD833215cBcc3f914bD1C9ece3EE7BF8B14f841bb')
-  const aDai = await IERC20.at('0xb62439d2627C23Dccf22931688A879B6E12A5a2f')
-  const lendingPool = await ILendingPool.at('0xDe4e2b5D55D2eE0F95b6D96C1BF86b45364e45B0')
-  const aave = await IMintableERC20.at('0x5b1869D9A4C187F2EAa108f3062412ecf0526b24')
+export async function getAAVEContracts(hre: HardhatRuntimeEnvironment, signer: ethers.Signer) {
+  const dai = await hre.ethers.getContractAt('IMintableERC20', '0xe78A0F7E598Cc8b0Bb87894B0F60dD2a88d6a8Ab')
+  const usdc = await hre.ethers.getContractAt('IMintableERC20', '0xD833215cBcc3f914bD1C9ece3EE7BF8B14f841bb')
+  const aDai = await hre.ethers.getContractAt('IERC20', '0xb62439d2627C23Dccf22931688A879B6E12A5a2f')
+  const lendingPool = await hre.ethers.getContractAt('ILendingPool', '0xDe4e2b5D55D2eE0F95b6D96C1BF86b45364e45B0')
+  const aave = await hre.ethers.getContractAt('IMintableERC20', '0x5b1869D9A4C187F2EAa108f3062412ecf0526b24')
 
-  const receipt = await web3.eth.sendTransaction({ data: stkAAVEBytecode, from, gas: 8000000 })
+  const tx = await signer.sendTransaction({ data: stkAAVEBytecode, gasLimit: 8_000_000 })
+  const receipt = await tx.wait() as TransactionReceipt
   const newManagerBytecode =
     managerBytecode.slice(0, managerBytecode.length - 104) +
-    receipt.contractAddress.slice(2) +
+    receipt.contractAddress!.slice(2) +
     managerBytecode.slice(managerBytecode.length - 64)
-  const receipt2 = await web3.eth.sendTransaction({ data: newManagerBytecode, from, gas: 8000000 })
+  const tx2 = await signer.sendTransaction({ data: newManagerBytecode, gasLimit: 8_000_000 })
+  const receipt2 = await tx2.wait() as TransactionReceipt
 
-  const stkAAVE = await IStakedAave.at(receipt.contractAddress)
-  const incentivesController = await IStakedTokenIncentivesController.at(receipt2.contractAddress)
+  const stkAAVE = await hre.ethers.getContractAt('IStakedAave', receipt.contractAddress!)
+  const incentivesController = await hre.ethers.getContractAt('IStakedTokenIncentivesController', receipt2.contractAddress!)
   return { dai, usdc, aDai, lendingPool, aave, stkAAVE, incentivesController }
 }
-
-module.exports = getAAVEContracts

@@ -1,7 +1,7 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/math/SafeMath.sol";
-import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../../../interfaces/IERC677.sol";
 import "../../../libraries/Bytes.sol";
 import "../../ReentrancyGuard.sol";
@@ -12,7 +12,6 @@ import "../../BasicAMBMediator.sol";
  * @dev Functionality for bridging multiple tokens to the other side of the bridge.
  */
 abstract contract TokensRelayer is BasicAMBMediator, ReentrancyGuard {
-    using SafeMath for uint256;
     using SafeERC20 for IERC677;
 
     /**
@@ -110,7 +109,7 @@ abstract contract TokensRelayer is BasicAMBMediator, ReentrancyGuard {
         setLock(true);
         token.safeTransferFrom(msg.sender, address(this), _value);
         setLock(false);
-        uint256 balanceDiff = token.balanceOf(address(this)).sub(balanceBefore);
+        uint256 balanceDiff = token.balanceOf(address(this)) - balanceBefore;
         require(balanceDiff <= _value);
         bridgeSpecificActionsOnTokenTransfer(address(token), msg.sender, _receiver, balanceDiff, _data);
     }

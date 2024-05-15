@@ -10,5 +10,8 @@ These contracts provide the core functionality for the Omnibridge AMB extension.
 
 This project is licensed under the GNU General Public License v3.0. See the [LICENSE](LICENSE) file for details.
 
+### History
 
+forked from https://github.com/omni/omnibridge
 
+used contracts from https://github.com/omni/tokenbridge-contracts

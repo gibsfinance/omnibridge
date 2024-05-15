@@ -1,76 +1,48 @@
-name: omnibridge-contracts
-
-on: [push]
+name: Tests
+on: [push, pull_request]
+env:
+  CI: true
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    outputs:
+      session-id: ${{ steps.start-session.outputs.session-id }}
+      session-endpoint: ${{ steps.start-session.outputs.session-endpoint }}
+
     strategy:
       fail-fast: false
       matrix:
-        task: [lint, test]
+        node: [20.11.1]
+        os: [ubuntu-latest]
+
     steps:
-      - uses: actions/setup-node@v1
+      - name: Clone repository
+        uses: actions/checkout@v2
+
+      - name: Set Node.js version
+        uses: actions/setup-node@v2
         with:
-          node-version: 14
-      - uses: actions/checkout@v2
-      - uses: actions/cache@v2
-        id: yarn-cache
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node_modules-${{ hashFiles('**/yarn.lock') }}
-      - run: yarn
-        if: ${{ !steps.yarn-cache.outputs.cache-hit }}
-      - run: yarn ${{ matrix.task }}
-  coverage:
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags') || contains(github.event.head_commit.message, 'coverage')
-    steps:
-      - uses: actions/setup-node@v1
-        with:
-          node-version: 14
-      - uses: actions/checkout@v2
-      - uses: actions/cache@v2
-        id: yarn-cache
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node_modules-${{ hashFiles('**/yarn.lock') }}
-      - run: yarn
-        if: ${{ !steps.yarn-cache.outputs.cache-hit }}
-      - run: yarn coverage
+          node-version: ${{ matrix.node }}
+
+      - uses: c-hive/gha-npm-cache@v2
+        name: Cache dependencies
+
+      - name: Install dependencies
+        run: npm ci # switch to `npm ci` when Node.js 6 support is dropped
+
+      - name: Run compile (+lint)
+        run: npm run compile
+
+      - name: Run tests
+        run: npm run coverage
+
       - name: Coveralls
         uses: coverallsapp/github-action@master
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Run tests
-        run: yarn e2e-tests:local
-  publish:
-    runs-on: ubuntu-latest
-    needs:
-      - validate
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags')
-    steps:
-      - uses: actions/checkout@v2
-      - name: Prepare tag names
-        id: prep
-        run: |
-          DOCKER_IMAGE=poanetwork/omnibridge-contracts
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo ::set-output name=tags::${DOCKER_IMAGE}:${GITHUB_REF#refs/tags/},${DOCKER_IMAGE}:latest
-          else
-            echo ::set-output name=tags::${DOCKER_IMAGE}:${GITHUB_REF#refs/heads/}-${GITHUB_SHA::8}
-          fi
-      - name: Login to Docker Hub
-        uses: docker/login-action@v1
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-      - uses: docker/build-push-action@v2
-        with:
-          pull: true
-          push: true
-          tags: ${{ steps.prep.outputs.tags }}
+          flag-name: ${{matrix.os}}-node-${{ matrix.node }}
+          parallel: true
+      # - name: Deploy MkDocs
+      #   uses: mhausenblas/mkdocs-deploy-gh-pages@1.26

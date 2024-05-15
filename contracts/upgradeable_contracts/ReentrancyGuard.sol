@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 contract ReentrancyGuard {
     function lock() internal view returns (bool res) {

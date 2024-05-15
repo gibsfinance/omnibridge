@@ -1,28 +1,29 @@
-const Web3 = require('web3')
+const hre = require('hardhat')
 
 module.exports = {
   mocha: {
-    timeout: 30000
+    timeout: 30_000,
   },
   forceBackupServer: true,
   providerOptions: {
     port: 8545,
-    seed: 'TestRPC is awesome!'
+    seed: 'TestRPC is awesome!',
   },
-  onServerReady: async (config) => {
-    const web3 = new Web3(config.provider)
+  onServerReady: async () => {
     const abi = [{
       inputs: [{ name: "", type: "address"}],
       outputs: [{ name: "", type: "uint256" }],
       name: "balanceOf",
       stateMutability: "view",
-      type: "function"
+      type: "function",
     }]
-    const cDai = new web3.eth.Contract(abi, '0x615cba17EE82De39162BB87dBA9BcfD6E8BcF298')
-    const faucet = (await web3.eth.getAccounts())[6]
+    const cDai = new hre.ethers.Contract('0x615cba17EE82De39162BB87dBA9BcfD6E8BcF298', abi)
+    const signers = await hre.ethers.getSigners()
+    const faucet = signers[6]
     while (true) {
       try {
-        if (await cDai.methods.balanceOf(faucet).call() !== '0') {
+        const balance = await cDai.balanceOf(faucet.getAddress())
+        if (balance !== 0n) {
           break
         }
       } catch (e) {
@@ -30,5 +31,5 @@ module.exports = {
       }
     }
   },
-  skipFiles: ['mocks']
+  skipFiles: ['mocks'],
 }

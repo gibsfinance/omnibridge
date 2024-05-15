@@ -1,7 +1,8 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "../../../interfaces/IInterestReceiver.sol";
 import "../../../interfaces/IInterestImplementation.sol";
@@ -40,7 +41,7 @@ abstract contract BaseInterestERC20 is IInterestImplementation {
 
         IERC20(_token).safeTransfer(_receiver, _amount);
 
-        if (Address.isContract(_receiver)) {
+        if (_receiver.code.length > 0) {
             IInterestReceiver(_receiver).onInterestReceived(_token);
         }
 

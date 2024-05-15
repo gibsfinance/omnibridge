@@ -9,7 +9,7 @@ Testing can be run in 2 modes, using local environment and using public testnets
 From the repository root, run the following command:
 
 ```bash
-yarn e2e-tests:local # same as ./e2e-tests/run-tests.sh local
+npm run e2e-tests:local # same as ./e2e-tests/run-tests.sh local
 ```
 
 This will do the following:
@@ -17,7 +17,7 @@ This will do the following:
 * Deploy AMB contracts in both chains (using `poanetwork/tokenbridge-contracts` docker image)
 * Deploy Omnibridge contract in both chains
 * Start the AMB oracle (using `poanetwork/tokenbridge-oracle` docker image)
-* Run the test scripts for executing different usage scenarios 
+* Run the test scripts for executing different usage scenarios
 
 ## Public testing
 
@@ -29,6 +29,6 @@ The following prerequisites are needed for running tests on public testnets:
 * File `./e2e-tests/.env` is created and filled (look at the template at `./e2e-tests/.env.example`)
 
 ```bash
-yarn e2e-tests:public # same as ./e2e-tests/run-tests.sh
+npm run e2e-tests:public # same as ./e2e-tests/run-tests.sh
 ```
 

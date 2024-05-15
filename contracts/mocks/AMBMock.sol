@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 contract AMBMock {
     event MockedEvent(bytes32 indexed messageId, address executor, uint8 dataType, bytes data, uint256 gas);
@@ -14,8 +15,11 @@ contract AMBMock {
     mapping(bytes32 => address) public failedMessageReceiver;
     mapping(bytes32 => bytes32) public failedMessageDataHash;
 
-    constructor() {
+    address public validatorContract;
+
+    constructor(address _validatorContract) {
         maxGasPerTx = 1000000;
+        validatorContract = _validatorContract;
     }
 
     function executeMessageCall(

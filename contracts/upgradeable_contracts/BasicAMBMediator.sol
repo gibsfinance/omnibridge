@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "./Ownable.sol";
 import "../interfaces/IAMB.sol";
@@ -66,7 +67,7 @@ abstract contract BasicAMBMediator is Ownable {
      * @param _bridgeContract the address of the bridge contract.
      */
     function _setBridgeContract(address _bridgeContract) internal {
-        require(Address.isContract(_bridgeContract));
+        require(_bridgeContract.code.length > 0);
         addressStorage[BRIDGE_CONTRACT] = _bridgeContract;
     }
 

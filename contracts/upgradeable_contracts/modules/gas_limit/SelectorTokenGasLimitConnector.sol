@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "../../Ownable.sol";
 import "./SelectorTokenGasLimitManager.sol";
@@ -33,7 +34,7 @@ abstract contract SelectorTokenGasLimitConnector is Ownable, BasicAMBMediator {
      * @param _manager address of gas limit manager contract.
      */
     function _setGasLimitManager(address _manager) internal {
-        require(_manager == address(0) || Address.isContract(_manager));
+        require(_manager == address(0) || _manager.code.length > 0);
         addressStorage[GAS_LIMIT_MANAGER_CONTRACT] = _manager;
     }
 

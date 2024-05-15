@@ -1,6 +1,6 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/math/SafeMath.sol";
 import "../../../upgradeability/EternalStorage.sol";
 
 /**

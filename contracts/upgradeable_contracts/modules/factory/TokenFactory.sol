@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "./TokenProxy.sol";
 import "../OwnableModule.sol";
@@ -43,7 +44,7 @@ contract TokenFactory is OwnableModule {
      * @param _tokenImage address of the new token image used for further deployments.
      */
     function setTokenImage(address _tokenImage) external onlyOwner {
-        require(Address.isContract(_tokenImage));
+        require(_tokenImage.code.length > 0);
         tokenImage = _tokenImage;
     }
 

@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/utils/Address.sol";
 import "../../Ownable.sol";
@@ -33,7 +34,7 @@ contract TokenFactoryConnector is Ownable {
      * @param _tokenFactory address of the deployed TokenFactory contract.
      */
     function _setTokenFactory(address _tokenFactory) internal {
-        require(Address.isContract(_tokenFactory));
+        require(_tokenFactory.code.length > 0);
         addressStorage[TOKEN_FACTORY_CONTRACT] = _tokenFactory;
     }
 }

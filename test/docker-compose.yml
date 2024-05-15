@@ -1,23 +1,40 @@
-version: '3.8'
 services:
-  ganache:
-    image: trufflesuite/ganache-cli
-    command: --deterministic --gasLimit 20000000 --allowUnlimitedContractSize
+  localhardhat:
+    container_name: localhardhat
+    build:
+      context: ..
+      dockerfile: Dockerfile.node
     ports:
-    - 8545:8545
+      - 8545:8545
+    networks:
+      - ntwrk
   compound:
+    container_name: compound
     image: kirillfedoseev/compound-test-deploy
-    # build: compound
     environment:
-      - PROVIDER
+      PROVIDER: http://localhardhat:8545
     stdin_open: true
     tty: true
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      - ntwrk
   aave:
+    container_name: aave
     image: kirillfedoseev/aave-test-deploy
-    # build: aave
     environment:
-      - PROVIDER
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      PROVIDER: http://localhardhat:8545
+    networks:
+      - ntwrk
+  test:
+    container_name: test
+    build:
+      context: ..
+      dockerfile: Dockerfile.dev
+    networks:
+      - ntwrk
+    environment:
+      PROVIDER: http://localhardhat:8545
+    command: ["npx", "hardhat", "--network", "localhardhat", "test"]
+
+networks:
+  ntwrk:
+    driver: bridge

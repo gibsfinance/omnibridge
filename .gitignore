@@ -9,3 +9,5 @@ deploy/*.env*
 deploy/bridgeDeploymentResults.json
 coverage.json
 e2e-tests/.env
+artifacts
+cache

@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "../interfaces/IOmnibridge.sol";
 import "../interfaces/IWETH.sol";
@@ -32,7 +33,7 @@ contract WETHOmnibridgeRouter is OwnableModule, Claimable {
     ) OwnableModule(_owner) {
         bridge = _bridge;
         WETH = _weth;
-        _weth.approve(address(_bridge), uint256(-1));
+        _weth.approve(address(_bridge), type(uint256).max);
     }
 
     /**
@@ -64,7 +65,7 @@ contract WETHOmnibridgeRouter is OwnableModule, Claimable {
         address _token,
         uint256 _value,
         bytes memory _data
-    ) external {
+    ) external payable virtual {
         require(_token == address(WETH));
         require(msg.sender == address(bridge));
         require(_data.length == 20);

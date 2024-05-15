@@ -1,6 +1,8 @@
 {
   "extends": "solhint:recommended",
-  "plugins": ["prettier"],
+  "plugins": [
+    "prettier"
+  ],
   "rules": {
     "prettier/prettier": "error",
     "avoid-low-level-calls": "off",
@@ -8,7 +10,15 @@
     "reason-string": "off",
     "no-empty-blocks": "off",
     "var-name-mixedcase": "off",
-    "func-visibility": ["warn", { "ignoreConstructors": true } ],
-    "compiler-version": ["error", "0.7.5"]
+    "func-visibility": [
+      "warn",
+      {
+        "ignoreConstructors": true
+      }
+    ],
+    "compiler-version": [
+      "error",
+      "0.8.24"
+    ]
   }
 }

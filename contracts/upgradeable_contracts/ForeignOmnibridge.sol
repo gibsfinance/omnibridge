@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "./BasicOmnibridge.sol";
 import "./components/common/GasLimitManager.sol";
@@ -13,7 +14,6 @@ import "../libraries/SafeMint.sol";
 contract ForeignOmnibridge is BasicOmnibridge, GasLimitManager, InterestConnector {
     using SafeERC20 for IERC677;
     using SafeMint for IBurnableMintableERC677Token;
-    using SafeMath for uint256;
 
     constructor(string memory _suffix) BasicOmnibridge(_suffix) {}
 
@@ -161,13 +161,13 @@ contract ForeignOmnibridge is BasicOmnibridge, GasLimitManager, InterestConnecto
             // since _setInterestImplementation guarantees that impl is either a contract or zero address
             // and interest implementation does not contain any selfdestruct opcode
             if (address(impl) != address(0)) {
-                uint256 availableBalance = balance.sub(impl.investedAmount(_token));
+                uint256 availableBalance = balance - impl.investedAmount(_token);
                 if (_value > availableBalance) {
-                    impl.withdraw(_token, (_value - availableBalance).add(minCashThreshold(_token)));
+                    impl.withdraw(_token, (_value - availableBalance) + minCashThreshold(_token));
                 }
             }
 
-            _setMediatorBalance(_token, balance.sub(_balanceChange));
+            _setMediatorBalance(_token, balance - _balanceChange);
             IERC677(_token).safeTransfer(_recipient, _value);
         } else {
             _getMinterFor(_token).safeMint(_recipient, _value);
@@ -194,7 +194,7 @@ contract ForeignOmnibridge is BasicOmnibridge, GasLimitManager, InterestConnecto
      */
     function _unaccountedBalance(address _token) internal view override returns (uint256) {
         IInterestImplementation impl = interestImplementation(_token);
-        uint256 invested = Address.isContract(address(impl)) ? impl.investedAmount(_token) : 0;
-        return IERC677(_token).balanceOf(address(this)).sub(mediatorBalance(_token).sub(invested));
+        uint256 invested = address(impl).code.length > 0 ? impl.investedAmount(_token) : 0;
+        return IERC677(_token).balanceOf(address(this)) - (mediatorBalance(_token) - invested);
     }
 }

@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "./BasicOmnibridge.sol";
 import "./modules/forwarding_rules/MultiTokenForwardingRulesConnector.sol";
@@ -16,7 +17,6 @@ contract HomeOmnibridge is
     OmnibridgeFeeManagerConnector,
     MultiTokenForwardingRulesConnector
 {
-    using SafeMath for uint256;
     using SafeERC20 for IERC677;
 
     constructor(string memory _suffix) BasicOmnibridge(_suffix) {}
@@ -131,7 +131,7 @@ contract HomeOmnibridge is
         bytes32 _messageId = messageId();
         if (fee > 0) {
             emit FeeDistributed(fee, _token, _messageId);
-            valueToBridge = valueToBridge.sub(fee);
+            valueToBridge = valueToBridge - fee;
         }
 
         _releaseTokens(_isNative, _token, _recipient, valueToBridge, _value);
@@ -167,7 +167,7 @@ contract HomeOmnibridge is
 
         address nativeToken = nativeTokenAddress(_token);
         uint256 fee = _distributeFee(HOME_TO_FOREIGN_FEE, nativeToken == address(0), _from, _token, _value);
-        uint256 valueToBridge = _value.sub(fee);
+        uint256 valueToBridge = _value - fee;
 
         bytes memory data = _prepareMessage(nativeToken, _token, _receiver, valueToBridge, _data);
 

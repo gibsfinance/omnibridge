@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 /**
  * @title Proxy
@@ -10,6 +11,8 @@ abstract contract Proxy {
      * @return address of the implementation to which it will be delegated
      */
     function implementation() public view virtual returns (address);
+
+    // receive() external payable {}
 
     /**
      * @dev Fallback function allowing to perform a delegatecall to the given implementation.

@@ -1,6 +1,6 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/math/SafeMath.sol";
 import "./Initializable.sol";
 import "./Upgradeable.sol";
 import "./Claimable.sol";
@@ -37,7 +37,6 @@ abstract contract BasicOmnibridge is
 {
     using SafeERC20 for IERC677;
     using SafeMint for IBurnableMintableERC677Token;
-    using SafeMath for uint256;
 
     // Workaround for storing variable up-to-32 bytes suffix
     uint256 private immutable SUFFIX_SIZE;
@@ -329,7 +328,7 @@ abstract contract BasicOmnibridge is
 
         // process token is native with respect to this side of the bridge
         if (_nativeToken == address(0)) {
-            _setMediatorBalance(_token, mediatorBalance(_token).add(_value));
+            _setMediatorBalance(_token, mediatorBalance(_token) + _value);
 
             // process token which bridged alternative was already ACKed to be deployed
             if (isBridgedTokenDeployAcknowledged(_token)) {
@@ -414,7 +413,7 @@ abstract contract BasicOmnibridge is
     ) internal virtual {
         if (_isNative) {
             IERC677(_token).safeTransfer(_recipient, _value);
-            _setMediatorBalance(_token, mediatorBalance(_token).sub(_balanceChange));
+            _setMediatorBalance(_token, mediatorBalance(_token) - _balanceChange);
         } else {
             _getMinterFor(_token).safeMint(_recipient, _value);
         }
@@ -467,7 +466,7 @@ abstract contract BasicOmnibridge is
         uint256 _value,
         bytes memory _data
     ) internal {
-        if (Address.isContract(_recipient)) {
+        if (_recipient.code.length > 0) {
             _recipient.call(abi.encodeWithSelector(IERC20Receiver.onTokenBridged.selector, _token, _value, _data));
         }
     }
@@ -493,7 +492,7 @@ abstract contract BasicOmnibridge is
      * @return amount of excess tokens.
      */
     function _unaccountedBalance(address _token) internal view virtual returns (uint256) {
-        return IERC677(_token).balanceOf(address(this)).sub(mediatorBalance(_token));
+        return IERC677(_token).balanceOf(address(this)) - mediatorBalance(_token);
     }
 
     function _handleTokens(

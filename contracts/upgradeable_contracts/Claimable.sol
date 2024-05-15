@@ -1,6 +1,7 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../libraries/AddressHelper.sol";
 
 /**
@@ -36,7 +37,7 @@ contract Claimable {
      * @dev Internal function for withdrawing all native coins from the contract.
      * @param _to address of the coins receiver.
      */
-    function claimNativeCoins(address _to) internal {
+    function claimNativeCoins(address _to) internal virtual {
         uint256 value = address(this).balance;
         AddressHelper.safeSendValue(payable(_to), value);
     }
@@ -46,7 +47,7 @@ contract Claimable {
      * @param _token address of the claimed ERC20 token.
      * @param _to address of the tokens receiver.
      */
-    function claimErc20Tokens(address _token, address _to) internal {
+    function claimErc20Tokens(address _token, address _to) internal virtual {
         IERC20 token = IERC20(_token);
         uint256 balance = token.balanceOf(address(this));
         token.safeTransfer(_to, balance);

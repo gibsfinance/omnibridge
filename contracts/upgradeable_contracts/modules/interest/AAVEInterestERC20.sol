@@ -1,7 +1,8 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../../../interfaces/IAToken.sol";
 import "../../../interfaces/IOwnable.sol";
 import "../../../interfaces/ILendingPool.sol";
@@ -15,7 +16,6 @@ import "./BaseInterestERC20.sol";
  * @dev This contract contains token-specific logic for investing ERC20 tokens into AAVE protocol.
  */
 contract AAVEInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
-    using SafeMath for uint256;
     using SafeERC20 for IERC20;
     using SafeERC20 for IAToken;
 
@@ -103,7 +103,7 @@ contract AAVEInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
 
         // SafeERC20.safeApprove does not work here in case of possible interest reinitialization,
         // since it does not allow positive->positive allowance change. However, it would be safe to make such change here.
-        ILegacyERC20(_token).approve(address(lendingPool()), uint256(-1));
+        ILegacyERC20(_token).approve(address(lendingPool()), type(uint256).max);
 
         emit InterestEnabled(_token, address(aToken));
         emit InterestDustUpdated(_token, _dust);
@@ -138,7 +138,7 @@ contract AAVEInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
      */
     function invest(address _token, uint256 _amount) external override onlyMediator {
         InterestParams storage params = interestParams[_token];
-        params.investedAmount = params.investedAmount.add(_amount);
+        params.investedAmount = params.investedAmount + _amount;
         lendingPool().deposit(_token, _amount, address(this), 0);
     }
 
@@ -167,7 +167,7 @@ contract AAVEInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
         (IAToken aToken, uint96 dust) = (params.aToken, params.dust);
         uint256 balance = aToken.balanceOf(address(this));
         // small portion of tokens are reserved for possible truncation/round errors
-        uint256 reserved = params.investedAmount.add(dust);
+        uint256 reserved = params.investedAmount + dust;
         return balance > reserved ? balance - reserved : 0;
     }
 
@@ -219,16 +219,16 @@ contract AAVEInterestERC20 is BaseInterestERC20, MediatorOwnableModule {
 
         uint256 aTokenBalance = 0;
         // try to redeem all aTokens
-        // it is safe to specify uint256(-1) as max amount of redeemed tokens
+        // it is safe to specify type(uint256).max as max amount of redeemed tokens
         // since the withdraw method of the pool contract will return the entire balance
-        try lendingPool().withdraw(_token, uint256(-1), mediator) {} catch {
+        try lendingPool().withdraw(_token, type(uint256).max, mediator) {} catch {
             aTokenBalance = aToken.balanceOf(address(this));
             aToken.safeTransfer(mediator, aTokenBalance);
         }
 
         uint256 balance = IERC20(_token).balanceOf(address(this));
         IERC20(_token).safeTransfer(mediator, balance);
-        IERC20(_token).safeApprove(address(lendingPool()), 0);
+        IERC20(_token).approve(address(lendingPool()), 0);
 
         emit ForceDisable(_token, balance, aTokenBalance, params.investedAmount);
 

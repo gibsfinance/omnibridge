@@ -1,4 +1,5 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/utils/Address.sol";
 import "./OwnableModule.sol";
@@ -16,7 +17,7 @@ contract MediatorOwnableModule is OwnableModule {
      * @param _owner address of the owner that is allowed to perform additional actions on the particular module.
      */
     constructor(address _mediator, address _owner) OwnableModule(_owner) {
-        require(Address.isContract(_mediator));
+        require(_mediator.code.length > 0);
         mediator = _mediator;
     }
 

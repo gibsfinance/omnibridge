@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 
 set -e
 
@@ -6,44 +6,21 @@ trap cleanup EXIT
 
 cleanup() {
   if [ "$KEEP_RUNNING" != true ]; then
-    docker-compose -f test/docker-compose.yml down
+    docker compose -f test/docker-compose.yml down
+    docker compose -f test/docker-compose.yml rm
   fi
 }
 cleanup
 
-ganache_running() {
-  nc -z localhost 8545
-}
+# build all in parallel
+docker compose -f test/docker-compose.yml build
 
-if [ "$SOLIDITY_COVERAGE" = true ]; then
-  node --max-old-space-size=4096 node_modules/.bin/truffle run coverage --network ganache 2>/dev/null &
-  pid=$!
+docker compose -f test/docker-compose.yml up --remove-orphans -d localhardhat
 
-  echo "Waiting in-process ganache to launch on port 8545"
-  while ! ganache_running; do
-    sleep 0.5
-  done
+sleep 15
 
-  echo "Deploy AAVE protocol contracts"
-  PROVIDER=http://host.docker.internal:8545 docker-compose -f test/docker-compose.yml up aave
+docker compose -f test/docker-compose.yml up --remove-orphans aave
 
-  echo "Deploy Compound protocol contracts"
-  PROVIDER=http://host.docker.internal:8545 docker-compose -f test/docker-compose.yml up compound || true
+docker compose -f test/docker-compose.yml up --remove-orphans compound || true
 
-  wait $pid
-else
-  if ganache_running; then
-    echo "Using existing ganache instance"
-  else
-    echo "Starting our own ganache instance"
-    docker-compose -f test/docker-compose.yml up -d ganache
-    sleep 5
-    echo "Deploy Compound protocol contracts"
-    PROVIDER=http://ganache:8545 docker-compose -f test/docker-compose.yml up compound || true
-
-    echo "Deploy AAVE protocol contracts"
-    PROVIDER=http://ganache:8545 docker-compose -f test/docker-compose.yml up aave
-  fi
-
-  node --max-old-space-size=4096 node_modules/.bin/truffle test --network ganache "$@"
-fi
+docker compose -f test/docker-compose.yml up --remove-orphans test

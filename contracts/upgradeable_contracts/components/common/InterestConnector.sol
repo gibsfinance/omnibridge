@@ -1,8 +1,8 @@
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/utils/Address.sol";
-import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
-import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../../Ownable.sol";
 import "../../../interfaces/IInterestReceiver.sol";
 import "../../../interfaces/IInterestImplementation.sol";
@@ -13,7 +13,6 @@ import "../native/MediatorBalanceStorage.sol";
  * @dev This contract gives an abstract way of receiving interest on locked tokens.
  */
 contract InterestConnector is Ownable, MediatorBalanceStorage {
-    using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
     /**
@@ -70,7 +69,7 @@ contract InterestConnector is Ownable, MediatorBalanceStorage {
      * @param _token of token to disable interest for.
      */
     function disableInterest(address _token) external onlyOwner {
-        interestImplementation(_token).withdraw(_token, uint256(-1));
+        interestImplementation(_token).withdraw(_token, type(uint256).max);
         _setInterestImplementation(_token, address(0));
     }
 
@@ -82,7 +81,7 @@ contract InterestConnector is Ownable, MediatorBalanceStorage {
     function invest(address _token) external {
         IInterestImplementation impl = interestImplementation(_token);
         // less than _token.balanceOf(this), since it does not take into account mistakenly locked tokens that should be processed via fixMediatorBalance.
-        uint256 balance = mediatorBalance(_token).sub(impl.investedAmount(_token));
+        uint256 balance = mediatorBalance(_token) - impl.investedAmount(_token);
         uint256 minCash = minCashThreshold(_token);
 
         require(balance > minCash);
