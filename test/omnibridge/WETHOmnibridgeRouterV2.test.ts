@@ -147,7 +147,9 @@ describe('WETHOmnibridgeRouterV2', () => {
                 // sig list is empty because this is a test - none of the other tests go this far
                 const nextBaseFee = 1_000n
                 await setNextBlockBaseFeePerGas(nextBaseFee)
-                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x')
+                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x', {
+                    maxPriorityFeePerGas: 0,
+                })
                 const receipt = await tx.wait()
                 const gasUsed = receipt!.gasUsed
                 const maxFees = (gasUsed + 31_657n) * 11n / 10n * nextBaseFee
