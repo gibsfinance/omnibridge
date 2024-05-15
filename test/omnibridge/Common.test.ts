@@ -1,4 +1,5 @@
 import hre from 'hardhat'
+import mocha from 'mocha'
 import { loadFixture } from '@nomicfoundation/hardhat-network-helpers'
 import { expect } from 'chai'
 import * as ethers from 'ethers'
@@ -49,6 +50,10 @@ const logsFrom = async <T extends ethers.BaseContract>(c: T, tx: ethers.Transact
   const receipt = await tx.wait() as ethers.TransactionReceipt
   return receipt.logs.map((l) => c.interface.parseLog(l))
     .filter((log): log is ethers.LogDescription => !!log)
+}
+
+interface TestFn {
+  (this: Mocha.Test): Promise<void>;
 }
 type MediatorType = HomeOmnibridge | ForeignOmnibridge
 function runTests(isHome: boolean) {
@@ -2237,11 +2242,11 @@ function runTests(isHome: boolean) {
       let daiInterestImpl!: CompoundInterestERC20
       let foreignOmnibridge!: ForeignOmnibridge
 
-      const deployContractsCompound = async function (this: Mocha.Test) {
+      const deployContractsCompound: TestFn = async function () {
         await deployContracts()
         const contracts = await getCompoundContracts()
         if (!(await contracts.comptroller.getDeployedCode())) {
-          console.log('compound contracts missing')
+          console.log('compound contracts missing');
           this.skip()
         }
         faucet = signers[6]
@@ -2443,7 +2448,7 @@ function runTests(isHome: boolean) {
       let daiInterestImpl!: AAVEInterestERC20
       let borrower!: ethers.Signer
 
-      const deployContractsAave = async function (this: Mocha.Test) {
+      const deployContractsAave: TestFn = async function () {
         await deployContracts()
         const contracts = await getAAVEContracts(hre, signers[8])
         if (!(await contracts.aave.getDeployedCode())) {
