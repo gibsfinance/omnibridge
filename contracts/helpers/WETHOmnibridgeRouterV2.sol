@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.24;
 
-import "../interfaces/IOmnibridge.sol";
-import "../interfaces/IWETH.sol";
-import "../libraries/AddressHelper.sol";
-import "../libraries/Bytes.sol";
-import "../upgradeable_contracts/modules/OwnableModule.sol";
-import "../upgradeable_contracts/Claimable.sol";
-import { IBasicForeignAMB } from "../interfaces/IBasicForeignAMB.sol";
-import { IBasicAMBMediator } from "../interfaces/IBasicAMBMediator.sol";
 import { TransientReentrancy } from "./TransientReentrancy.sol";
+
+import { IBasicAMBMediator } from "../interfaces/IBasicAMBMediator.sol";
+import { IBasicForeignAMB } from "../interfaces/IBasicForeignAMB.sol";
+import { IBridgeValidators } from "../interfaces/IBridgeValidators.sol";
+import { IOmnibridge } from "../interfaces/IOmnibridge.sol";
+import { IWETH } from "../interfaces/IWETH.sol";
+
+import { AddressHelper } from "../libraries/AddressHelper.sol";
+import { Bytes } from "../libraries/Bytes.sol";
+
+import { OwnableModule } from "../upgradeable_contracts/modules/OwnableModule.sol";
+import { Claimable } from "../upgradeable_contracts/Claimable.sol";
 import { StorageSlot } from "@openzeppelin/contracts/utils/StorageSlot.sol";
 
 /**
@@ -23,8 +27,10 @@ import { StorageSlot } from "@openzeppelin/contracts/utils/StorageSlot.sol";
 contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy {
     IOmnibridge public immutable bridge;
     IWETH public immutable WETH;
+    address public validatorsFilter;
+    mapping(address => bool) public isValidator;
 
-    error NotValidator();
+    error NotPayable();
 
     bytes32 public constant RUNNER_SLOT = keccak256(abi.encode("omnibridgerouter.runner"));
 
@@ -42,6 +48,7 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
         bridge = _bridge;
         WETH = _weth;
         _weth.approve(address(_bridge), type(uint256).max);
+        validatorsFilter = address(this);
     }
 
     /**
@@ -75,6 +82,7 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
     struct FeeDirector {
         address recipient;
         uint256 limit;
+        uint256 multiplier;
     }
 
     /**
@@ -106,7 +114,7 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
                 uint256 gasUsed = uint256(uint96(runner)) - gasleft();
                 // extra 50k added for 2x transfer handling + 10%
                 // to cover profit motive + risk compensation
-                fees = (((gasUsed + 50_000) * 11) / 10) * block.basefee;
+                fees = (((gasUsed + 50_000) * feeDirector.multiplier) / 1 ether) * block.basefee;
                 // fees must not be greater than limit
                 fees = fees > feeDirector.limit ? feeDirector.limit : fees;
                 // fees must not be greater than value
@@ -154,10 +162,16 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
         bytes calldata _data,
         bytes calldata _signatures
     ) external payable nonReentrantUint256(RUNNER_SLOT, uint256(uint96(gasleft())) | (uint256(uint160(runner)) << 96)) {
-        IBasicForeignAMB bridgeContract = IBasicForeignAMB(address(IBasicAMBMediator(address(bridge)).bridgeContract()));
-        if (!bridgeContract.validatorContract().isValidator(runner)) {
-            revert NotValidator();
+        if (!IBridgeValidators(validatorsFilter).isValidator(runner)) {
+            revert NotPayable();
         }
-        bridgeContract.safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
+        IBasicForeignAMB(address(IBasicAMBMediator(address(bridge)).bridgeContract()))
+            .safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
+    }
+    function setValidatorsFilter(address _validatorsFilter) external payable onlyOwner {
+        validatorsFilter = _validatorsFilter;
+    }
+    function setValidatorStatus(address _validator, bool _isValidator) external payable onlyOwner {
+        isValidator[_validator] = _isValidator;
     }
 }

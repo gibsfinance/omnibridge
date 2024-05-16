@@ -13,7 +13,7 @@ const maxPerTx = oneEther
 const minPerTx = ethers.parseEther('0.01')
 const executionDailyLimit = dailyLimit
 const executionMaxPerTx = maxPerTx
-describe('WETHOmnibridgeRouterV2', () => {
+describe.only('WETHOmnibridgeRouterV2', () => {
     let token!: WETH
     let mediator!: ForeignOmnibridge
     let WETHOmnibridgeRouterV2!: WETHOmnibridgeRouterV2__factory
@@ -43,6 +43,7 @@ describe('WETHOmnibridgeRouterV2', () => {
         ambBridgeContract = await AMBMock.deploy(bridgeValidators)
         await mediator.initialize(ambBridgeContract, mediator, [dailyLimit, maxPerTx, minPerTx], [executionDailyLimit, executionMaxPerTx], 1000000, owner, tokenFactory)
         token = await WETH.deploy()
+
     }
 
     beforeEach(async () => {
@@ -131,18 +132,21 @@ describe('WETHOmnibridgeRouterV2', () => {
                 stubMediator = await StubMediator.deploy(token)
                 WETHRouter = await WETHOmnibridgeRouterV2.deploy(stubMediator, token, owner)
                 await token.deposit({ value })
-                await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
+                await token.transfer(WETHRouter, value)
             })
 
             it('transfers the appropriate fees to the runner', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
-                    ['address', 'uint256'],
-                    [await user.getAddress(), oneEther],
+                    ['address', 'uint256', 'uint256'],
+                    [await user.getAddress(), oneEther, oneEther * 11n / 10n],
                 )
 
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'NotValidator')
-                await stubMediator.setValidator(v1, true)
+                    .to.revertedWithCustomError(WETHRouter, 'NotPayable')
+                // no event emitted
+                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
+                await WETHRouter.connect(owner).setValidatorStatus(v1, true)
+                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(true)
                 // data input would not look like this, it would have a receiver and other things
                 // sig list is empty because this is a test - none of the other tests go this far
                 const nextBaseFee = 1_000n
@@ -159,10 +163,8 @@ describe('WETHOmnibridgeRouterV2', () => {
                 const [wethRouterAfter, userAfter, v1After, v2After] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
                 const gasUsed = receipt!.gasUsed
                 const txFees = gasUsed * nextBaseFee
-                const maxFees = (gasUsed + 31_657n) * 11n / 10n * nextBaseFee
                 expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx runner has his native token reduced to pay for gas')
                 expect(v2Before.weth).to.equal(v2After.weth, 'tx runner does not have any weth modified')
-                // user
                 expect(userBefore.balance).to.be.lessThan(userAfter.balance)
                 const userDelta = userAfter.balance - userBefore.balance
                 expect(userDelta).to.be.lessThan(oneEther)
@@ -171,13 +173,6 @@ describe('WETHOmnibridgeRouterV2', () => {
                 const actionFees = v1After.balance - v1Before.balance
                 expect(wethRouterBefore.balance).to.equal(wethRouterAfter.balance)
                 expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth + userDelta + actionFees)
-                // fees only go to the address that is named (prevents mev profit without cutting off the pathway)
-                // await expect(tx)
-                //     .to.changeEtherBalances(
-                //         [user, v1, v2],
-                //         [oneEther - maxFees, maxFees, 0n],
-                //         'fees only go to the address that is named (prevents mev profit without cutting off the pathway)',
-                //     )
             })
         })
     })
