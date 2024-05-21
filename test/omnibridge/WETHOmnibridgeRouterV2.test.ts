@@ -13,7 +13,7 @@ const maxPerTx = oneEther
 const minPerTx = ethers.parseEther('0.01')
 const executionDailyLimit = dailyLimit
 const executionMaxPerTx = maxPerTx
-describe.only('WETHOmnibridgeRouterV2', () => {
+describe('WETHOmnibridgeRouterV2', () => {
     let token!: WETH
     let mediator!: ForeignOmnibridge
     let WETHOmnibridgeRouterV2!: WETHOmnibridgeRouterV2__factory
@@ -140,7 +140,6 @@ describe.only('WETHOmnibridgeRouterV2', () => {
                     ['address', 'bool', 'uint256', 'uint256'],
                     [await user.getAddress(), false, oneEther, oneEther * 11n / 10n],
                 )
-
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
                 // no event emitted
