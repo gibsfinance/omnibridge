@@ -81,6 +81,7 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
 
     struct FeeDirector {
         address recipient;
+        bool fixedFee;
         uint256 limit;
         uint256 multiplier;
     }
@@ -110,13 +111,17 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
             uint256 toRecipient = _value;
             FeeDirector memory feeDirector = abi.decode(_data, (FeeDirector));
             if (runner > 0) {
-                // a runner has been named (does not have to match sender)
-                uint256 gasUsed = uint256(uint96(runner)) - gasleft();
-                // extra 50k added for 2x transfer handling + 10%
-                // to cover profit motive + risk compensation
-                fees = (((gasUsed + 50_000) * feeDirector.multiplier) / 1 ether) * block.basefee;
-                // fees must not be greater than limit
-                fees = fees > feeDirector.limit ? feeDirector.limit : fees;
+                if (feeDirector.fixedFee) {
+                    fees = feeDirector.limit;
+                } else {
+                    // a runner has been named (does not have to match sender)
+                    uint256 gasUsed = uint256(uint96(runner)) - gasleft();
+                    // extra 50k added for 2x transfer handling + 10%
+                    // to cover profit motive + risk compensation
+                    fees = (((gasUsed + 50_000) * feeDirector.multiplier) / 1 ether) * block.basefee;
+                    // fees must not be greater than limit
+                    fees = fees > feeDirector.limit ? feeDirector.limit : fees;
+                }
                 // fees must not be greater than value
                 fees = fees > _value ? _value : fees;
                 toRecipient = _value - fees;
