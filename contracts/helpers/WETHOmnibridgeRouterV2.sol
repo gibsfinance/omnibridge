@@ -174,6 +174,8 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
             .safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
     }
     function setValidatorsFilter(address _validatorsFilter) external payable onlyOwner {
+        // if this doesn't fail we are at least guaranteed that it has the method
+        IBridgeValidators(_validatorsFilter).isValidator(address(0));
         validatorsFilter = _validatorsFilter;
     }
     function setValidatorStatus(address _validator, bool _isValidator) external payable onlyOwner {

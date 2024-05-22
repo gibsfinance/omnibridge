@@ -11,3 +11,4 @@ coverage.json
 e2e-tests/.env
 artifacts
 cache
+.env

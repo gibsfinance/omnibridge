@@ -3,6 +3,8 @@ import 'solidity-coverage'
 import 'hardhat-tracer'
 import '@nomicfoundation/hardhat-toolbox'
 
+import './tasks'
+
 Error.stackTraceLimit = Infinity
 
 const config: HardhatUserConfig = {
@@ -20,6 +22,9 @@ const config: HardhatUserConfig = {
   tracer: {
     enabled: true,
   },
+  sourcify: {
+    enabled: true,
+  },
   networks: {
     hardhat: {
       accounts: {
@@ -35,10 +40,21 @@ const config: HardhatUserConfig = {
     localhardhat: {
       url: process.env.PROVIDER || 'http://localhost:8545',
     },
+    mainnet: {
+      accounts: {
+        mnemonic: process.env.MNEMONIC,
+      },
+      url: 'https://rpc-ethereum.g4mm4.io',
+    },
   },
   typechain: {
     outDir: 'artifacts/types',
     target: 'ethers-v6',
+  },
+  etherscan: {
+    apiKey: {
+      mainnet: process.env.ETHERSCAN_API_KEY || '',
+    },
   },
 }
 
