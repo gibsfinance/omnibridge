@@ -36,6 +36,13 @@ const config: HardhatUserConfig = {
       chainId: 1337,
       enableTransientStorage: true,
       allowUnlimitedContractSize: true,
+      ...(process.env.FORK ? {
+        forking: {
+          url: 'https://rpc-ethereum.g4mm4.io',
+          blockNumber: 19_926_341,
+        },
+      } : {}),
+      // forking: process.env.FORK ? {} : {},
     },
     localhardhat: {
       url: process.env.PROVIDER || 'http://localhost:8545',

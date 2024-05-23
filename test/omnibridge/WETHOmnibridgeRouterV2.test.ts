@@ -1,4 +1,5 @@
 import hre from 'hardhat'
+import { impersonateAccount, stopImpersonatingAccount } from '@nomicfoundation/hardhat-network-helpers'
 import { loadFixture, setNextBlockBaseFeePerGas } from '@nomicfoundation/hardhat-network-helpers'
 import { expect } from 'chai'
 import * as helpers from '../helpers/helpers'
@@ -135,10 +136,21 @@ describe('WETHOmnibridgeRouterV2', () => {
                 await token.transfer(WETHRouter, value)
             })
 
+            it('can call onTokenBridged directly', async () => {
+                const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
+                    ['address', 'bool', 'uint256', 'uint256'],
+                    [await user.getAddress(), false, oneEther, oneEther / 10n],
+                )
+                await stubMediator.exec(WETHRouter, WETHRouter.interface.encodeFunctionData('onTokenBridged', [
+                    await token.getAddress(),
+                    value, // after bridge fees value
+                    data,
+                ]))
+            })
             it('transfers the appropriate fees to the runner', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'bool', 'uint256', 'uint256'],
-                    [await user.getAddress(), false, oneEther, oneEther * 11n / 10n],
+                    [await user.getAddress(), false, oneEther, oneEther / 10n],
                 )
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
