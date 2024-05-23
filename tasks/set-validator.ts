@@ -14,7 +14,7 @@ task('set-validator', 'sets the status of an address on the contract')
   .addParam('address', 'the address to add or remove from the validator set')
   .addParam('router', 'the router to operate on')
   .setAction(async (args: Input, hre: HardhatRuntimeEnvironment) => {
-    const wethOmnibridgeRouterV2 = await hre.ethers.getContractAt('WETHOmnibridgeRouterV2', args.router)
+    const wethOmnibridgeRouterV2 = await hre.ethers.getContractAt('contracts/helpers/WETHOmnibridgeRouterV2.sol:WETHOmnibridgeRouterV2', args.router)
     let status: boolean | null = args.add === true ? true : null
     status = status || (args.remove === true ? false : null)
     if (status === null) throw new Error('no status change provided')
