@@ -127,11 +127,16 @@ contract WETHOmnibridgeRouterV2 is OwnableModule, Claimable, TransientReentrancy
                 toRecipient = _value - fees;
             }
             if (toRecipient > 0) {
-                AddressHelper.safeSendValue(payable(feeDirector.recipient), toRecipient);
+                (bool success, ) = feeDirector.recipient.call{value: toRecipient}("");
+                if (!success) {
+                    revert NotPayable();
+                }
             }
             if (fees > 0) {
-                address feeRecipient = address(uint160(runner >> 96));
-                AddressHelper.safeSendValue(payable(feeRecipient), fees);
+                (bool success, ) = address(uint160(runner >> 96)).call{value: fees}("");
+                if (!success) {
+                    revert NotPayable();
+                }
             }
         }
     }
