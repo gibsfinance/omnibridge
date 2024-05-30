@@ -42,7 +42,6 @@ const config: HardhatUserConfig = {
           blockNumber: 19_926_341,
         },
       } : {}),
-      // forking: process.env.FORK ? {} : {},
     },
     localhardhat: {
       url: process.env.PROVIDER || 'http://localhost:8545',
@@ -53,6 +52,12 @@ const config: HardhatUserConfig = {
       },
       url: 'https://rpc-ethereum.g4mm4.io',
     },
+    bsc: {
+      accounts: {
+        mnemonic: process.env.MNEMONIC,
+      },
+      url: process.env.RPC_56 || 'https://binance.llamarpc.com',
+    },
   },
   typechain: {
     outDir: 'artifacts/types',
@@ -61,6 +66,7 @@ const config: HardhatUserConfig = {
   etherscan: {
     apiKey: {
       mainnet: process.env.ETHERSCAN_API_KEY || '',
+      bsc: process.env.ETHERSCAN_API_KEY || '',
     },
   },
 }

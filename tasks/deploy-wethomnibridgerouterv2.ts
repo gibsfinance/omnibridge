@@ -11,7 +11,7 @@ task('deploy-wethomnibridgerouterv2', 'deploys the weth omnibridge router')
   .addParam('bridge', 'the bridge contract that should be used to bridge to (home) or receive from (foreign)')
   .setAction(async (args: Input, hre: HardhatRuntimeEnvironment) => {
     const [signer] = await hre.ethers.getSigners()
-    console.log('deploying with %o', signer.address)
+    console.log('deploying with %o@%o/%o', signer.address, await signer.getNonce('latest'), await signer.getNonce('pending'))
     if (hre.network.name !== 'hardhat') {
       for (const a of [args.bridge, args.weth]) {
         const code = await hre.ethers.provider.getCode(a)
