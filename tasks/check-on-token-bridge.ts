@@ -1,7 +1,7 @@
 import { task } from "hardhat/config";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import * as helpers from '@nomicfoundation/hardhat-network-helpers'
-import { WETH, WETHOmnibridgeRouterV2 } from "../artifacts/types";
+import type { WETH, WETHOmnibridgeRouterV2 } from "../artifacts/types";
 
 type Input = {
   router: string;
@@ -36,7 +36,8 @@ task('check-on-token-bridge', 'checks that the onTokenBridged call works when im
     console.log('encodedFeeDirector', encodedFeeDirector)
     // for some reason we have to provide an impersonated signer to run a view method
     const bridgeSigner = await hre.ethers.getImpersonatedSigner(bridge)
-    await router.connect(bridgeSigner).onTokenBridged.staticCall(weth, oneEther, encodedFeeDirector, {
+    const routerWithBridgeSigner = router.connect(bridgeSigner) as WETHOmnibridgeRouterV2
+    await routerWithBridgeSigner.onTokenBridged.staticCall(weth, oneEther, encodedFeeDirector, {
       from: bridge,
     })
   })
