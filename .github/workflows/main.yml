@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm ci # switch to `npm ci` when Node.js 6 support is dropped
 
+      - name: Create typechain types
+        run: npx hardhat compile
+
       - name: Run compile (+lint)
         run: npm run compile
 
