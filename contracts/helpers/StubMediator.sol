@@ -5,6 +5,7 @@ import { IERC20Receiver } from "../interfaces/IERC20Receiver.sol";
 
 contract StubMediator {
   address public immutable WETH;
+  address public token;
   mapping(address => bool) public validators;
   constructor(address _weth) {
     WETH = _weth;
@@ -19,6 +20,9 @@ contract StubMediator {
   }
   receive() external payable {}
   fallback() external payable {}
+  function setToken(address _token) external {
+    token = _token;
+  }
   function bridgeContract() external view returns(address) {
     return address(this);
   }
@@ -35,6 +39,6 @@ contract StubMediator {
     bytes calldata _data,
     bytes calldata _signatures
   ) external {
-    IERC20Receiver(msg.sender).onTokenBridged(WETH, 1 ether, _data);
+    IERC20Receiver(msg.sender).onTokenBridged(token == address(0) ? WETH : token, 1 ether, _data);
   }
 }
