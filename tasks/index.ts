@@ -1,5 +1,6 @@
 import './deploy-wethomnibridgerouterv2'
 import './deploy-wbnbomnibridgerouter'
+import './deploy-tokenomnibridgerouter'
 import './set-validator'
 import './check-on-token-bridge'
 import './parse-calldata'

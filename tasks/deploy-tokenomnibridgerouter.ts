@@ -6,7 +6,7 @@ type Input = {
   wNative: string;
 }
 
-task('deploy-tokenomnibridgerouter', 'deploys the weth omnibridge router')
+task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
   .addParam('wNative', 'the wNative contract to use to wrap (home) or unwrap (foreign)')
   .addParam('bridge', 'the bridge contract that should be used to bridge to (home) or receive from (foreign)')
   .setAction(async (args: Input, hre: HardhatRuntimeEnvironment) => {
@@ -22,20 +22,20 @@ task('deploy-tokenomnibridgerouter', 'deploys the weth omnibridge router')
         }
       }
     }
-    const contractId = 'contracts/helpers/tokenOmnibridgeRouterV2.sol:TokenOmnibridgeRouterV2'
-    const TokenOmnibridgeRouterV2 = await hre.ethers.getContractFactory(contractId)
+    const contractId = 'contracts/helpers/TokenOmnibridgeRouter.sol:TokenOmnibridgeRouter'
+    const TokenOmnibridgeRouter = await hre.ethers.getContractFactory(contractId)
     const latest = await hre.ethers.provider.getBlock('latest')
     const eip1559Enabled = !!latest?.baseFeePerGas
     const inputs = [args.bridge, args.wNative, signer.address, eip1559Enabled] as const
-    const tokenomnibridgerouterv2 = await TokenOmnibridgeRouterV2.deploy(...inputs, {
+    const tokenomnibridgerouter = await TokenOmnibridgeRouter.deploy(...inputs, {
       nonce: latestNonce,
     })
-    console.log('new TokenOmnibridgeRouterV2(bridge=%o, wNative=%o, owner=%o, eip1559Enabled=%o) => %o', ...inputs, await tokenomnibridgerouterv2.getAddress())
-    const tx = tokenomnibridgerouterv2.deploymentTransaction()!
+    console.log('new TokenOmnibridgeRouter(bridge=%o, wNative=%o, owner=%o, eip1559Enabled=%o) => %o', ...inputs, await tokenomnibridgerouter.getAddress())
+    const tx = tokenomnibridgerouter.deploymentTransaction()!
     console.log('@%o', tx.hash)
     await tx.wait()
     await hre.run('verify:verify', {
-      address: await tokenomnibridgerouterv2.getAddress(),
+      address: await tokenomnibridgerouter.getAddress(),
       contract: contractId,
       constructorArguments: inputs,
     })
