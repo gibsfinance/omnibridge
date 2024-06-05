@@ -1,4 +1,5 @@
 import { HardhatUserConfig } from 'hardhat/config'
+import { HARDHAT_NETWORK_MNEMONIC } from 'hardhat/internal/core/config/default-config'
 import 'solidity-coverage'
 import 'hardhat-tracer'
 import '@nomicfoundation/hardhat-toolbox'
@@ -48,13 +49,13 @@ const config: HardhatUserConfig = {
     },
     mainnet: {
       accounts: {
-        mnemonic: process.env.MNEMONIC,
+        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
       },
       url: 'https://rpc-ethereum.g4mm4.io',
     },
     bsc: {
       accounts: {
-        mnemonic: process.env.MNEMONIC,
+        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
       },
       url: process.env.RPC_56 || 'https://binance.llamarpc.com',
     },
