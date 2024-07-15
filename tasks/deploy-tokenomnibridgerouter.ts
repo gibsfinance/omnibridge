@@ -34,9 +34,12 @@ task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
     const tx = tokenomnibridgerouter.deploymentTransaction()!
     console.log('@%o', tx.hash)
     await tx.wait()
-    await hre.run('verify:verify', {
-      address: await tokenomnibridgerouter.getAddress(),
-      contract: contractId,
-      constructorArguments: inputs,
-    })
+    if (hre.network.name !== 'hardhat') {
+      await new Promise((resolve) => setTimeout(resolve, 30_000))
+      await hre.run('verify:verify', {
+        address: await tokenomnibridgerouter.getAddress(),
+        contract: contractId,
+        constructorArguments: inputs,
+      })
+    }
   })
