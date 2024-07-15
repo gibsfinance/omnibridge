@@ -85,9 +85,10 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
     struct FeeDirector {
         address recipient;
         // a list of up to 256 flags for modifying how the contract handles tokens
-        // 0th index is to unwrap the tokens
-        // 1st index is to use the limit as the fee amount
+        // 0th index is to use the limit as the fee amount
+        // 1st index is to unwrap the tokens
         // 2nd is to ask the system to not include the priority fee
+        // 3rd is to use the multiplier as a factor of total tokens
         // if a base fee is available it will only use that
         uint256 settings;
         uint256 limit;
@@ -119,7 +120,7 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
             // setting at the 0th slot from the right is a signal to unwrap the tokens
             bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(WNative) == _token;
             // handling WNative -> Native
-            if (toNative) {
+            if (toNative && _token == address(WNative)) {
                 WNative.withdraw(_value);
             }
             uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
@@ -156,6 +157,8 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
         // use the limit as the fee
         if (feeDirector.settings << 255 >> 255 == 1) {
             fees = feeDirector.limit;
+        } else if (feeDirector.settings << 252 >> 255 == 1) {
+            fees = (_value * feeDirector.multiplier) / 1 ether;
         } else {
             // a runner has been named (does not have to match sender)
             uint256 gasUsed = uint256(uint96(runner)) - gasleft();

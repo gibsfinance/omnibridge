@@ -134,6 +134,7 @@ describe('TokenOmnibridgeRouter', () => {
                 WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner, true)
                 await token.deposit({ value })
                 await (token2 as WETH).deposit({ value })
+                // transfer tokens to weth router (would happen via bridge in prod)
                 await token.transfer(WETHRouter, value)
                 await expect(token2.transfer(WETHRouter, value)).to.be.fulfilled
             })
@@ -141,7 +142,7 @@ describe('TokenOmnibridgeRouter', () => {
             it('can call onTokenBridged directly', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'bool', 'uint256', 'uint256'],
-                    [await user.getAddress(), false, oneEther, oneEther / 10n],
+                    [await user.getAddress(), 0b0000, oneEther, oneEther / 10n],
                 )
                 await stubMediator.exec(WETHRouter, WETHRouter.interface.encodeFunctionData('onTokenBridged', [
                     await token.getAddress(),
@@ -152,7 +153,7 @@ describe('TokenOmnibridgeRouter', () => {
             it('transfers the appropriate fees to the runner', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'uint256', 'uint256', 'uint256'],
-                    [await user.getAddress(), 0b010, oneEther, oneEther / 10n],
+                    [await user.getAddress(), 0b0010, oneEther, oneEther / 10n],
                 )
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
@@ -190,7 +191,7 @@ describe('TokenOmnibridgeRouter', () => {
             it('can transfer wrapped native to the runner', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'uint256', 'uint256', 'uint256'],
-                    [await user.getAddress(), 0b100, oneEther, oneEther / 10n],
+                    [await user.getAddress(), 0b0100, oneEther, oneEther / 10n],
                 )
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
@@ -228,10 +229,10 @@ describe('TokenOmnibridgeRouter', () => {
                 expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth + userDelta + actionFees)
             })
             it('can transfer any token to the runner', async () => {
-                // even thought this data does request an unwrap, the unwrap will not occur
+                // even though this data does request an unwrap, the unwrap will not occur
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'uint256', 'uint256', 'uint256'],
-                    [await user.getAddress(), 0b110, oneEther, oneEther / 10n],
+                    [await user.getAddress(), 0b0110, oneEther, oneEther / 10n],
                 )
                 await stubMediator.setToken(token2)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
@@ -275,6 +276,51 @@ describe('TokenOmnibridgeRouter', () => {
                 expect(wethRouterBefore.balance).to.equal(wethRouterAfter.balance)
                 expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth)
                 expect(wethRouterBefore.token2).to.equal(wethRouterAfter.token2 + userDelta + actionFees)
+            })
+            it('can transfer a percentage of the amount to the runner', async () => {
+                // even though this data does request an unwrap, the unwrap will not occur
+                const feeRatio = 100n
+                const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
+                    ['address', 'uint256', 'uint256', 'uint256'],
+                    [await user.getAddress(), 0b1000, oneEther, oneEther / feeRatio],
+                )
+                // await stubMediator.setToken(token2)
+                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
+                    .to.revertedWithCustomError(WETHRouter, 'NotPayable')
+                // no event emitted
+                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
+                await WETHRouter.connect(owner).setValidatorStatus(v1, true)
+                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(true)
+                // data input would not look like this, it would have a receiver and other things
+                // sig list is empty because this is a test - none of the other tests go this far
+                const nextBaseFee = 1_000n
+                await setNextBlockBaseFeePerGas(nextBaseFee)
+                const snap = async (addr: ethers.Addressable) => ({
+                    balance: await hre.ethers.provider.getBalance(addr),
+                    weth: await token.balanceOf(addr),
+                })
+                const [wethRouterBefore, userBefore, v1Before, v2Before] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
+                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x', {
+                    maxPriorityFeePerGas: 0,
+                })
+                const receipt = await tx.wait()
+                const [wethRouterAfter, userAfter, v1After, v2After] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
+                const gasUsed = receipt!.gasUsed
+                const txFees = gasUsed * nextBaseFee
+                // transaction runner
+                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx runner has his native token reduced to pay for gas')
+                expect(v2Before.weth).to.equal(v2After.weth, 'tx runner does not have any weth modified')
+                // destination
+                expect(userBefore.balance).to.be.equal(userAfter.balance, 'user did not have to run any transaction')
+                const fees = oneEther / feeRatio
+                const anticipatedTransfer = oneEther - fees
+                expect(userBefore.weth).to.be.equal(userAfter.weth - anticipatedTransfer, 'users weth was increased')
+                // recipient of fees
+                expect(v1Before.balance).to.be.equal(v1After.balance, 'fee recipients native tokens were not touched')
+                expect(v1Before.weth).to.be.equal(v1After.weth - fees, 'fee recipients weth was increased')
+                // no tokens remain in the router
+                expect(wethRouterBefore.balance).to.equal(wethRouterAfter.balance)
+                expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth + oneEther)
             })
         })
     })
