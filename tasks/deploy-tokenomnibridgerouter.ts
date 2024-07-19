@@ -29,6 +29,9 @@ task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
     const inputs = [args.bridge, args.wNative, signer.address, eip1559Enabled] as const
     const tokenomnibridgerouter = await TokenOmnibridgeRouter.deploy(...inputs, {
       nonce: latestNonce,
+      ...(eip1559Enabled ? {} : {
+        type: 1,
+      }),
     })
     console.log('new TokenOmnibridgeRouter(bridge=%o, wNative=%o, owner=%o, eip1559Enabled=%o) => %o', ...inputs, await tokenomnibridgerouter.getAddress())
     const tx = tokenomnibridgerouter.deploymentTransaction()!
