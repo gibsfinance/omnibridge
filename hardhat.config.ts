@@ -8,6 +8,44 @@ import './tasks'
 
 Error.stackTraceLimit = Infinity
 
+const chains = {
+  56: {
+    hardforkHistory: {
+      merge: 17_233_000,
+      shanghai: 17_233_001,
+      cancun: 17_233_002,
+    },
+  },
+  369: {
+    hardforkHistory: {
+      merge: 17_233_000,
+      shanghai: 17_233_001,
+      cancun: 17_233_002,
+    },
+  },
+  943: {
+    hardforkHistory: {
+      merge: 15_537_394,
+      shanghai: 15_537_395,
+      cancun: 15_537_396,
+    },
+  },
+  11155111: {
+    hardforkHistory: {
+      merge: 1_000_000,
+      shanghai: 1_000_001,
+      cancun: 1_000_002,
+    },
+  },
+  1337: {
+    hardforkHistory: {
+      merge: 1_000_000,
+      shanghai: 1_000_001,
+      cancun: 1_000_002,
+    },
+  },
+}
+
 const config: HardhatUserConfig = {
   solidity: {
     compilers: [{
@@ -37,12 +75,21 @@ const config: HardhatUserConfig = {
       chainId: 1337,
       enableTransientStorage: true,
       allowUnlimitedContractSize: true,
-      ...(process.env.FORK ? {
-        forking: {
+      ...(process.env.CHAIN ? {
+        forking: process.env.CHAIN === 'mainnet' ? {
           url: 'https://rpc-ethereum.g4mm4.io',
           blockNumber: 19_926_341,
-        },
+        } : (
+          process.env.CHAIN === 'bsc' ? {
+            url: process.env.RPC_56 || 'https://binance.llamarpc.com',
+            blockNumber: 40_615_914,
+          } : {
+            url: 'https://badurl',
+            blockNumber: 1,
+          }
+        ),
       } : {}),
+      chains,
     },
     localhardhat: {
       url: process.env.PROVIDER || 'http://localhost:8545',
