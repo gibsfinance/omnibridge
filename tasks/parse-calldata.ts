@@ -28,7 +28,7 @@ task('parse-calldata', 'parses calldata to ensure that the appropriate parts wil
       console.log('multiplier %o or %o% of base fee', multiplier, formatEther(multiplier * 100n))
       return
     }
-    const token = await hre.ethers.getContractAt('IERC677', ZeroAddress)
+    const token = await hre.ethers.getContractAt('contracts/interfaces/IERC677.sol:IERC677', ZeroAddress)
     const [to, amount, bytes] = token.interface.decodeFunctionData('transferAndCall', args.data)
     console.log('should be bridge on home %o', to)
     console.log('amount: %o or %o', amount, formatEther(amount))
@@ -36,7 +36,7 @@ task('parse-calldata', 'parses calldata to ensure that the appropriate parts wil
     console.log('should be router on foreign %o', router)
     const feeDirectorBytes = `0x${bytes.slice(42)}`
     const [[destination, fixedFee, limit, multiplier]] = hre.ethers.AbiCoder.defaultAbiCoder().decode(
-      ['(address,bool,uint256,uint256)'],
+      ['(address,uint256,uint256,uint256)'],
       feeDirectorBytes,
     )
     console.log('destination %o', destination)
