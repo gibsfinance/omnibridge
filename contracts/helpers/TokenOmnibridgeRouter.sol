@@ -125,6 +125,12 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
             }
             uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
             uint256 fees;
+            uint256 balance = IERC20(_token).balanceOf(address(this));
+            if (balance < _value) {
+                // this covers the case of tax / reflection tokens
+                // where the amount bridged is less than the amount received by this router
+                _value = balance;
+            }
             uint256 toRecipient = _value;
             if (runner > 0) {
                 // setting at the 1st slot from the right is a signal to use the limit as the fixed fee

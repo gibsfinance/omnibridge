@@ -1,5 +1,5 @@
 import { task } from "hardhat/config";
-import { HardhatRuntimeEnvironment } from "hardhat/types";
+import type { HardhatRuntimeEnvironment } from "hardhat/types";
 
 type Input = {
   bridge: string;

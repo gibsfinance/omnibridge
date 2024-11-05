@@ -1,10 +1,11 @@
-import { HardhatUserConfig } from 'hardhat/config'
-import { HARDHAT_NETWORK_MNEMONIC } from 'hardhat/internal/core/config/default-config'
+import type { HardhatUserConfig } from 'hardhat/config'
 import 'solidity-coverage'
 import 'hardhat-tracer'
 import '@nomicfoundation/hardhat-toolbox'
 
 import './tasks'
+
+const HARDHAT_NETWORK_MNEMONIC = 'test test test test test test test test test test test junk'
 
 Error.stackTraceLimit = Infinity
 

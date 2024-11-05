@@ -5,7 +5,7 @@ import * as helpers from '../helpers/helpers'
 import * as setup from '../setup'
 import * as ethers from 'ethers'
 import { AMBMock, ForeignOmnibridge, StubMediator, WETH, TokenOmnibridgeRouter__factory, IERC20 } from '../../artifacts/types'
-import { TokenOmnibridgeRouter } from '../../artifacts/types/contracts/helpers/TokenOmnibridgeRouter'
+import type { TokenOmnibridgeRouter } from '../../artifacts/types/contracts/helpers/TokenOmnibridgeRouter'
 
 const oneEther = ethers.parseEther('1')
 const dailyLimit = ethers.parseEther('2.5')

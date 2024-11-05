@@ -1,6 +1,6 @@
 import { task } from "hardhat/config";
-import { HardhatRuntimeEnvironment } from "hardhat/types";
-import { WETHOmnibridgeRouter } from "../artifacts/types";
+import type { HardhatRuntimeEnvironment } from "hardhat/types";
+import type { WETHOmnibridgeRouterV2 } from "../artifacts/types";
 
 type Input = {
   owner: string;
@@ -11,7 +11,7 @@ task('transfer-ownership', 'runs the transfer ownership function on a router')
   .addParam('owner', 'sets the new owner')
   .addParam('router', 'the router to operate on')
   .setAction(async (args: Input, hre: HardhatRuntimeEnvironment) => {
-    const wethOmnibridgeRouterV2 = await hre.ethers.getContractAt('contracts/helpers/WETHOmnibridgeRouterV2.sol:WETHOmnibridgeRouterV2', args.router) as unknown as WETHOmnibridgeRouter
+    const wethOmnibridgeRouterV2 = await hre.ethers.getContractAt('contracts/helpers/WETHOmnibridgeRouterV2.sol:WETHOmnibridgeRouterV2', args.router) as unknown as WETHOmnibridgeRouterV2
     const [signer] = await hre.ethers.getSigners()
     if (await signer.getAddress() !== await wethOmnibridgeRouterV2.owner()) {
       console.log('%o is not %o', await signer.getAddress(), await wethOmnibridgeRouterV2.owner())
