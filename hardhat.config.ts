@@ -101,6 +101,12 @@ const config: HardhatUserConfig = {
       },
       url: 'https://rpc-ethereum.g4mm4.io',
     },
+    sepolia: {
+      accounts: {
+        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
+      },
+      url: process.env.RPC_11155111 || 'https://ethereum-sepolia-rpc.publicnode.com',
+    },
     bsc: {
       accounts: {
         mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
@@ -115,6 +121,7 @@ const config: HardhatUserConfig = {
   etherscan: {
     apiKey: {
       mainnet: process.env.ETHERSCAN_API_KEY || '',
+      sepolia: process.env.ETHERSCAN_API_KEY || '',
       bsc: process.env.ETHERSCAN_API_KEY || '',
     },
   },
