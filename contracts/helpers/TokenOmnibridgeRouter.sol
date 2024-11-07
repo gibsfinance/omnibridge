@@ -27,7 +27,7 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
     using SafeERC20 for IERC20;
     bool public immutable EIP1559_ENABLED;
     IOmnibridge public immutable bridge;
-    IWNative public immutable WNative;
+    IWNative public immutable wNative;
     address public validatorsFilter;
     mapping(address => bool) public isValidator;
 
@@ -48,7 +48,7 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
         bool _EIP1559_ENABLED
     ) OwnableModule(_owner) {
         bridge = _bridge;
-        WNative = _wNative;
+        wNative = _wNative;
         _wNative.approve(address(_bridge), type(uint256).max);
         validatorsFilter = address(this);
         EIP1559_ENABLED = _EIP1559_ENABLED;
@@ -78,8 +78,8 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
         _relayTokensAndCall(_receiver, _data);
     }
     function _relayTokensAndCall(address _receiver, bytes memory _data) internal {
-        WNative.deposit{ value: msg.value }();
-        bridge.relayTokensAndCall(address(WNative), _receiver, msg.value, _data);
+        wNative.deposit{ value: msg.value }();
+        bridge.relayTokensAndCall(address(wNative), _receiver, msg.value, _data);
     }
 
     struct FeeDirector {
@@ -98,7 +98,7 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
     /**
      * @dev Bridged callback function used for unwrapping received tokens.
      * Can only be called by the associated Omnibridge contract.
-     * @param _token bridged token contract address, should be WNative.
+     * @param _token bridged token contract address, should be wNative.
      * @param _value amount of bridged/received tokens.
      * @param _data extra data passed alongside with relayTokensAndCall
      * on the other side of the bridge. Should contain coins receiver address.
@@ -111,17 +111,17 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
         require(msg.sender == address(bridge));
 
         if (_data.length == 20) {
-            // handling legacy WNative -> Native
-            require(_token == address(WNative));
-            WNative.withdraw(_value);
+            // handling legacy wNative -> Native
+            require(_token == address(wNative));
+            wNative.withdraw(_value);
             AddressHelper.safeSendValue(payable(Bytes.bytesToAddress(_data)), _value);
         } else {
             FeeDirector memory feeDirector = abi.decode(_data, (FeeDirector));
             // setting at the 0th slot from the right is a signal to unwrap the tokens
-            bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(WNative) == _token;
-            // handling WNative -> Native
-            if (toNative && _token == address(WNative)) {
-                WNative.withdraw(_value);
+            bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(wNative) == _token;
+            // handling wNative -> Native
+            if (toNative && _token == address(wNative)) {
+                wNative.withdraw(_value);
             } else {
                 uint256 balance = IERC20(_token).balanceOf(address(this));
                 if (balance < _value) {
@@ -211,10 +211,10 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Ether receive function.
-     * Should be only called from the WNative contract when withdrawing native coins. Will revert otherwise.
+     * Should be only called from the wNative contract when withdrawing native coins. Will revert otherwise.
      */
     receive() external payable {
-        require(msg.sender == address(WNative));
+        require(msg.sender == address(wNative));
     }
     /**
      * @dev Validates provided signatures and relays a given message. Passes all available gas for the execution.
