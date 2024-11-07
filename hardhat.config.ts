@@ -2,6 +2,7 @@ import type { HardhatUserConfig } from 'hardhat/config'
 import 'solidity-coverage'
 import 'hardhat-tracer'
 import '@nomicfoundation/hardhat-toolbox'
+import '@solidstate/hardhat-4byte-uploader'
 
 import './tasks'
 
@@ -49,9 +50,11 @@ const chains = {
 
 const config: HardhatUserConfig = {
   solidity: {
-    compilers: [{
-      version: '0.8.24',
-    }],
+    compilers: [
+      {
+        version: '0.8.24',
+      },
+    ],
     settings: {
       optimizer: {
         enabled: true,
@@ -76,20 +79,25 @@ const config: HardhatUserConfig = {
       chainId: 1337,
       enableTransientStorage: true,
       allowUnlimitedContractSize: true,
-      ...(process.env.CHAIN ? {
-        forking: process.env.CHAIN === 'mainnet' ? {
-          url: 'https://rpc-ethereum.g4mm4.io',
-          blockNumber: 19_926_341,
-        } : (
-          process.env.CHAIN === 'bsc' ? {
-            url: process.env.RPC_56 || 'https://binance.llamarpc.com',
-            blockNumber: 40_615_914,
-          } : {
-            url: 'https://badurl',
-            blockNumber: 1,
+      ...(process.env.CHAIN
+        ? {
+            forking:
+              process.env.CHAIN === 'mainnet'
+                ? {
+                    url: 'https://rpc-ethereum.g4mm4.io',
+                    blockNumber: 19_926_341,
+                  }
+                : process.env.CHAIN === 'bsc'
+                  ? {
+                      url: process.env.RPC_56 || 'https://binance.llamarpc.com',
+                      blockNumber: 40_615_914,
+                    }
+                  : {
+                      url: 'https://badurl',
+                      blockNumber: 1,
+                    },
           }
-        ),
-      } : {}),
+        : {}),
       chains,
     },
     localhardhat: {
@@ -107,6 +115,18 @@ const config: HardhatUserConfig = {
       },
       url: process.env.RPC_11155111 || 'https://ethereum-sepolia-rpc.publicnode.com',
     },
+    pulsechainV4: {
+      accounts: {
+        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
+      },
+      url: process.env.RPC_943 || 'https://rpc.v4.testnet.pulsechain.com',
+    },
+    pulsechain: {
+      accounts: {
+        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
+      },
+      url: process.env.RPC_369 || 'https://rpc.pulsechain.com',
+    },
     bsc: {
       accounts: {
         mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
@@ -123,7 +143,30 @@ const config: HardhatUserConfig = {
       mainnet: process.env.ETHERSCAN_API_KEY || '',
       sepolia: process.env.ETHERSCAN_API_KEY || '',
       bsc: process.env.ETHERSCAN_API_KEY || '',
+      pulsechainV4: 'abc',
+      pulsechain: 'abc',
     },
+    customChains: [
+      {
+        network: 'pulsechainV4',
+        chainId: 943,
+        urls: {
+          apiURL: 'https://api.scan.v4.testnet.pulsechain.com/api',
+          browserURL: 'https://scan.v4.testnet.pulsechain.com/#',
+        },
+      },
+      {
+        network: 'pulsechain',
+        chainId: 369,
+        urls: {
+          apiURL: 'https://api.scan.pulsechain.com/api',
+          browserURL: 'https://scan.pulsechain.com',
+        },
+      },
+    ],
+  },
+  fourByteUploader: {
+    runOnCompile: true,
   },
 }
 

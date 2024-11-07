@@ -1,4 +1,5 @@
 import './deploy-wethomnibridgerouterv2'
+import './deploy-wplsomnibridgerouter'
 import './deploy-wbnbomnibridgerouter'
 import './deploy-tokenomnibridgerouter'
 import './set-validator'
