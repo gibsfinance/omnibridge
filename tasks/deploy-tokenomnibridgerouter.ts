@@ -1,9 +1,9 @@
-import { task } from "hardhat/config";
-import type { HardhatRuntimeEnvironment } from "hardhat/types";
+import { task } from 'hardhat/config'
+import type { HardhatRuntimeEnvironment } from 'hardhat/types'
 
 type Input = {
-  bridge: string;
-  wNative: string;
+  bridge: string
+  wNative: string
 }
 
 task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
@@ -17,7 +17,7 @@ task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
       for (const a of [args.bridge, args.wNative]) {
         const code = await hre.ethers.provider.getCode(a)
         if (code === '0x') {
-          console.log(`missing %o`, a)
+          console.log('missing %o', a)
           throw new Error('unable to deploy contract with missing dependencies')
         }
       }
@@ -29,11 +29,17 @@ task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
     const inputs = [args.bridge, args.wNative, signer.address, eip1559Enabled] as const
     const tokenomnibridgerouter = await TokenOmnibridgeRouter.deploy(...inputs, {
       nonce: latestNonce,
-      ...(eip1559Enabled ? {} : {
-        type: 1,
-      }),
+      ...(eip1559Enabled
+        ? {}
+        : {
+            type: 1,
+          }),
     })
-    console.log('new TokenOmnibridgeRouter(bridge=%o, wNative=%o, owner=%o, eip1559Enabled=%o) => %o', ...inputs, await tokenomnibridgerouter.getAddress())
+    console.log(
+      'new TokenOmnibridgeRouter(bridge=%o, wNative=%o, owner=%o, eip1559Enabled=%o) => %o',
+      ...inputs,
+      await tokenomnibridgerouter.getAddress(),
+    )
     const tx = tokenomnibridgerouter.deploymentTransaction()!
     console.log('@%o', tx.hash)
     await tx.wait()
