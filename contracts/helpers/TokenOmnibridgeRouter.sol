@@ -109,7 +109,12 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
         bytes memory _data
     ) external payable virtual nonReentrant {
         require(msg.sender == address(bridge));
-
+        uint256 balance = IERC20(_token).balanceOf(address(this));
+        if (balance < _value) {
+            // this covers the case of tax / reflection tokens
+            // where the amount bridged is less than the amount received by this router
+            _value = balance;
+        }
         if (_data.length == 20) {
             // handling legacy wNative -> Native
             require(_token == address(wNative));
@@ -122,13 +127,6 @@ contract TokenOmnibridgeRouter is OwnableModule, Claimable, ReentrancyV2 {
             // handling wNative -> Native
             if (toNative && _token == address(wNative)) {
                 wNative.withdraw(_value);
-            } else {
-                uint256 balance = IERC20(_token).balanceOf(address(this));
-                if (balance < _value) {
-                    // this covers the case of tax / reflection tokens
-                    // where the amount bridged is less than the amount received by this router
-                    _value = balance;
-                }
             }
             uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
             uint256 fees;

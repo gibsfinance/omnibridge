@@ -3,6 +3,7 @@ import 'solidity-coverage'
 import 'hardhat-tracer'
 import '@nomicfoundation/hardhat-toolbox'
 import '@solidstate/hardhat-4byte-uploader'
+import '@nomicfoundation/hardhat-verify'
 
 import './tasks'
 
@@ -142,7 +143,7 @@ const config: HardhatUserConfig = {
     apiKey: {
       mainnet: process.env.ETHERSCAN_API_KEY || '',
       sepolia: process.env.ETHERSCAN_API_KEY || '',
-      bsc: process.env.ETHERSCAN_API_KEY || '',
+      bsc: process.env.BSCSCAN_API_KEY || '',
       pulsechainV4: 'abc',
       pulsechain: 'abc',
     },
