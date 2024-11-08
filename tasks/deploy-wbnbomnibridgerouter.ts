@@ -1,9 +1,9 @@
-import { task } from "hardhat/config";
-import type { HardhatRuntimeEnvironment } from "hardhat/types";
+import { task } from 'hardhat/config'
+import type { HardhatRuntimeEnvironment } from 'hardhat/types'
 
 type Input = {
-  bridge: string;
-  wNative: string;
+  bridge: string
+  wNative: string
 }
 
 task('deploy-wbnbomnibridgerouter', 'deploys the bnb omnibridge router')
@@ -17,7 +17,7 @@ task('deploy-wbnbomnibridgerouter', 'deploys the bnb omnibridge router')
       for (const a of [args.bridge, args.wNative]) {
         const code = await hre.ethers.provider.getCode(a)
         if (code === '0x') {
-          console.log(`missing %o`, a)
+          console.log('missing %o', a)
           throw new Error('unable to deploy contract with missing dependencies')
         }
       }

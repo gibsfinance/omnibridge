@@ -26,17 +26,19 @@ task('deploy-tokenomnibridgerouter', 'deploys the token omnibridge router')
     const TokenOmnibridgeRouter = await hre.ethers.getContractFactory(contractId)
     const latest = await hre.ethers.provider.getBlock('latest')
     const eip1559Enabled = !!latest?.baseFeePerGas
-    const inputs = [args.bridge, args.wNative, signer.address, eip1559Enabled] as const
+    const inputs = [args.bridge, args.wNative, signer.address] as const
     const tokenomnibridgerouter = await TokenOmnibridgeRouter.deploy(...inputs, {
       nonce: latestNonce,
       ...(eip1559Enabled
-        ? {}
+        ? {
+            type: 2,
+          }
         : {
             type: 1,
           }),
     })
     console.log(
-      'new TokenOmnibridgeRouter(bridge=%o, wNative=%o, owner=%o, eip1559Enabled=%o) => %o',
+      'new TokenOmnibridgeRouter(bridge=%o, wNative=%o, owner=%o) => %o',
       ...inputs,
       await tokenomnibridgerouter.getAddress(),
     )

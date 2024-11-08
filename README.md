@@ -31,10 +31,12 @@ bun hardhat --network sepolia deploy-tokenomnibridgerouter \
 # delivery-enabled only
 npx hardhat --network sepolia set-validator --add \
   --address 0xDcd4D88552c86114b2ca029F7F8d4e1a7951d051 \
-  --router 0x554FaEdf41d12FcEE68822E424412F15d3bd6D06
+  --router
 ```
 
 mainnets
+
+pulsechain
 
 ```sh
 bun hardhat --network pulsechain deploy-tokenomnibridgerouter \
@@ -46,7 +48,7 @@ bun hardhat --network mainnet deploy-tokenomnibridgerouter \
 # delivery-enabled only
 npx hardhat --network mainnet set-validator --add \
   --address 0x5ECfE77502317F3677f23C3b8Ab17929ACE3D74E \
-  --router 0x5df881304F6D4279B46f7aB001d55f025bAF1bc5
+  --router
 ```
 
 tokensex
@@ -55,11 +57,11 @@ tokensex
 bun hardhat --network pulsechain deploy-tokenomnibridgerouter \
   --w-native 0xA1077a294dDE1B09bB078844df40758a5D0f9a27 \
   --bridge 0xf1DFc63e10fF01b8c3d307529b47AefaD2154C0e
-bun hardhat --network bsc deploy-tokenomnibridgerouter \
+bun hardhat --network bsc deploy-wbnbomnibridgerouter \
   --w-native 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c \
   --bridge 0xb4005881e81a6ecd2c1f75d58e8e41f28d59c6b1
 # delivery-enabled only
 npx hardhat --network mainnet set-validator --add \
   --address 0xc3c3d5d3ba946a2eb3906878ebe187418b0b524e \
-  --router 0x5df881304F6D4279B46f7aB001d55f025bAF1bc5
+  --router
 ```
