@@ -1,7 +1,7 @@
+# Omnibridge Smart Contracts
+
 [![Join the chat at https://gitter.im/poanetwork/poa-bridge](https://badges.gitter.im/poanetwork/poa-bridge.svg)](https://gitter.im/poanetwork/poa-bridge?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 [![Build Status](https://github.com/poanetwork/omnibridge/workflows/omnibridge-contracts/badge.svg?branch=master)](https://github.com/poanetwork/omnibridge/workflows/omnibridge-contracts/badge.svg?branch=master)
-
-# Omnibridge Smart Contracts
 
 These contracts provide the core functionality for the Omnibridge AMB extension.
 
@@ -13,9 +13,9 @@ This project is licensed under the GNU General Public License v3.0. See the [LIC
 
 ### History
 
-forked from https://github.com/omni/omnibridge
+forked from [omnibridge](https://github.com/omni/omnibridge)
 
-used contracts from https://github.com/omni/tokenbridge-contracts
+used contracts from [tokenbridge-contracts](https://github.com/omni/tokenbridge-contracts)
 
 ### Deployments
 
