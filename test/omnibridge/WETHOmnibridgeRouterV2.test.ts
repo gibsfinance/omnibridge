@@ -7,6 +7,7 @@ import * as setup from '../setup'
 import * as ethers from 'ethers'
 import { AMBMock, ForeignOmnibridge, StubMediator, WETH, WETHOmnibridgeRouterV2__factory } from '../../artifacts/types'
 import { WETHOmnibridgeRouterV2 } from '../../artifacts/types/contracts/helpers/WETHOmnibridgeRouterV2'
+import { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers'
 
 const oneEther = ethers.parseEther('1')
 const dailyLimit = ethers.parseEther('2.5')
@@ -19,11 +20,11 @@ describe('WETHOmnibridgeRouterV2', () => {
     let mediator!: ForeignOmnibridge
     let WETHOmnibridgeRouterV2!: WETHOmnibridgeRouterV2__factory
     let ambBridgeContract!: AMBMock
-    let signers!: ethers.Signer[]
-    let owner!: ethers.Signer
-    let user!: ethers.Signer
-    let v1!: ethers.Signer
-    let v2!: ethers.Signer
+    let signers!: HardhatEthersSigner[]
+    let owner!: HardhatEthersSigner
+    let user!: HardhatEthersSigner
+    let v1!: HardhatEthersSigner
+    let v2!: HardhatEthersSigner
     const deployContracts = async () => {
         signers = await hre.ethers.getSigners()
         owner = signers[0]
@@ -105,7 +106,7 @@ describe('WETHOmnibridgeRouterV2', () => {
 
         describe('err conditions', () => {
             let WETHRouter!: WETHOmnibridgeRouterV2
-            let stubMediator!: ethers.Signer
+            let stubMediator!: HardhatEthersSigner
 
             beforeEach(async () => {
                 stubMediator = signers[2]

@@ -40,5 +40,4 @@ contract WBNBOmnibridgeRouter is TokenOmnibridgeBase {
         wNative.deposit{ value: msg.value }();
         IOmnibridgeExtra(bridge).relayTokensAndCall(address(wNative), _receiver, msg.value, _data, senderOrigin);
     }
-
 }

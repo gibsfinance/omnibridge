@@ -6,6 +6,7 @@ import * as setup from '../setup'
 import * as ethers from 'ethers'
 import { AMBMock, ForeignOmnibridge, StubMediator, WETH, TokenOmnibridgeRouter__factory, IERC20 } from '../../artifacts/types'
 import type { TokenOmnibridgeRouter } from '../../artifacts/types/contracts/helpers/TokenOmnibridgeRouter'
+import type { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers'
 
 const oneEther = ethers.parseEther('1')
 const dailyLimit = ethers.parseEther('2.5')
@@ -19,11 +20,11 @@ describe('TokenOmnibridgeRouter', () => {
     let mediator!: ForeignOmnibridge
     let TokenOmnibridgeRouter!: TokenOmnibridgeRouter__factory
     let ambBridgeContract!: AMBMock
-    let signers!: ethers.Signer[]
-    let owner!: ethers.Signer
-    let user!: ethers.Signer
-    let v1!: ethers.Signer
-    let v2!: ethers.Signer
+    let signers!: HardhatEthersSigner[]
+    let owner!: HardhatEthersSigner
+    let user!: HardhatEthersSigner
+    let v1!: HardhatEthersSigner
+    let v2!: HardhatEthersSigner
     const deployContracts = async () => {
         signers = await hre.ethers.getSigners()
         owner = signers[0]
@@ -53,7 +54,7 @@ describe('TokenOmnibridgeRouter', () => {
 
     it('wrapAndRelayTokens', async () => {
         const value = oneEther
-        const WETHRouter = await TokenOmnibridgeRouter.deploy(mediator, token, owner, true)
+        const WETHRouter = await TokenOmnibridgeRouter.deploy(mediator, token, owner)
         const method1 = WETHRouter.connect(user).getFunction('wrapAndRelayTokens()')
         const method2 = WETHRouter.connect(user).getFunction('wrapAndRelayTokens(address)')
         await expect(method1({ value: value })).to.be.fulfilled
@@ -76,7 +77,7 @@ describe('TokenOmnibridgeRouter', () => {
 
     it('onTokenBridged', async () => {
         const stubMediator = signers[2]
-        const WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner, true)
+        const WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner)
         const value = oneEther / 100n
         await token.deposit({ value: value })
         await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
@@ -90,7 +91,7 @@ describe('TokenOmnibridgeRouter', () => {
     })
 
     it('claimTokens', async () => {
-        const WETHRouter = await TokenOmnibridgeRouter.deploy(mediator, token, owner, true)
+        const WETHRouter = await TokenOmnibridgeRouter.deploy(mediator, token, owner)
         const value = oneEther / 100n
         await token.deposit({ value: value })
         await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
@@ -105,11 +106,11 @@ describe('TokenOmnibridgeRouter', () => {
 
         describe('err conditions', () => {
             let WETHRouter!: TokenOmnibridgeRouter
-            let stubMediator!: ethers.Signer
+            let stubMediator!: HardhatEthersSigner
 
             beforeEach(async () => {
                 stubMediator = signers[2]
-                WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner, true)
+                WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner)
                 await token.deposit({ value })
                 await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
             })
@@ -131,7 +132,7 @@ describe('TokenOmnibridgeRouter', () => {
             beforeEach(async () => {
                 const StubMediator = await hre.ethers.getContractFactory('StubMediator')
                 stubMediator = await StubMediator.deploy(token)
-                WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner, true)
+                WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner)
                 await token.deposit({ value })
                 await (token2 as WETH).deposit({ value })
                 // transfer tokens to weth router (would happen via bridge in prod)

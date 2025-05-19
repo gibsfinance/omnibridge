@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.24;
 
-import { ReentrancyV2 } from "./ReentrancyV2.sol";
+import {ReentrancyV2} from "./ReentrancyV2.sol";
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { IBasicAMBMediator } from "../interfaces/IBasicAMBMediator.sol";
-import { IBasicForeignAMB } from "../interfaces/IBasicForeignAMB.sol";
-import { IBridgeValidators } from "../interfaces/IBridgeValidators.sol";
-import { IOmnibridge } from "../interfaces/IOmnibridge.sol";
-import { IWETH as IWNative } from "../interfaces/IWETH.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IBasicAMBMediator} from "../interfaces/IBasicAMBMediator.sol";
+import {IBasicForeignAMB} from "../interfaces/IBasicForeignAMB.sol";
+import {IBridgeValidators} from "../interfaces/IBridgeValidators.sol";
+import {IOmnibridge} from "../interfaces/IOmnibridge.sol";
+import {IWETH as IWNative} from "../interfaces/IWETH.sol";
 
-import { AddressHelper } from "../libraries/AddressHelper.sol";
-import { Bytes } from "../libraries/Bytes.sol";
+import {AddressHelper} from "../libraries/AddressHelper.sol";
+import {Bytes} from "../libraries/Bytes.sol";
 
-import { OwnableModule } from "../upgradeable_contracts/modules/OwnableModule.sol";
-import { Claimable } from "../upgradeable_contracts/Claimable.sol";
-import { StorageSlot } from "@openzeppelin/contracts/utils/StorageSlot.sol";
+import {OwnableModule} from "../upgradeable_contracts/modules/OwnableModule.sol";
+import {Claimable} from "../upgradeable_contracts/Claimable.sol";
+import {StorageSlot} from "@openzeppelin/contracts/utils/StorageSlot.sol";
 
 /**
  * @title TokenOmnibridgeBase
@@ -25,6 +25,7 @@ import { StorageSlot } from "@openzeppelin/contracts/utils/StorageSlot.sol";
  */
 contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     using SafeERC20 for IERC20;
+
     bool public immutable EIP1559_ENABLED;
     address public immutable bridge;
     IWNative public immutable wNative;
@@ -41,12 +42,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param _wNative address of the WNative token used for wrapping/unwrapping native coins (e.g. WETH/WBNB/WXDAI).
      * @param _owner address of the contract owner.
      */
-    constructor(
-        address _bridge,
-        IWNative _wNative,
-        address _owner,
-        bool _EIP1559_ENABLED
-    ) OwnableModule(_owner) {
+    constructor(address _bridge, IWNative _wNative, address _owner, bool _EIP1559_ENABLED) OwnableModule(_owner) {
         bridge = _bridge;
         wNative = _wNative;
         _wNative.approve(address(_bridge), type(uint256).max);
@@ -75,11 +71,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param _data extra data passed alongside with relayTokensAndCall
      * on the other side of the bridge. Should contain coins receiver address.
      */
-    function onTokenBridged(
-        address _token,
-        uint256 _value,
-        bytes memory _data
-    ) external payable virtual nonReentrant {
+    function onTokenBridged(address _token, uint256 _value, bytes memory _data) external payable virtual nonReentrant {
         require(msg.sender == address(bridge));
         uint256 balance = IERC20(_token).balanceOf(address(this));
         if (balance < _value) {
@@ -118,7 +110,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     function _distribute(bool native, address token, address recipient, uint256 amount) internal {
         if (native) {
-            (bool success, ) = recipient.call{value: amount}("");
+            (bool success,) = recipient.call{value: amount}("");
             if (!success) {
                 revert NotPayable();
             }
@@ -127,10 +119,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         }
     }
 
-    function _feeInfo(
-        bool toNative, uint256 _value, uint256 runner,
-        FeeDirector memory feeDirector
-    ) internal view returns(uint256 fees, uint256 toRecipient) {
+    function _feeInfo(bool toNative, uint256 _value, uint256 runner, FeeDirector memory feeDirector)
+        internal
+        view
+        returns (uint256 fees, uint256 toRecipient)
+    {
         // use the limit as the fee
         if (feeDirector.settings << 255 >> 255 == 1) {
             fees = feeDirector.limit;
@@ -142,10 +135,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             // extra 50k added for 2x transfer handling + 10%
             // to cover profit motive + risk compensation
             uint256 baselineFee = _baseFee((feeDirector.settings << 253 >> 255) == 1);
-            fees = ((gasUsed + (
-                // this is an unwrap, different costs for tokens vs native
-                toNative ? 50_000 : 100_000
-            )) * feeDirector.multiplier * baselineFee) / 1 ether;
+            fees = (
+                (
+                    gasUsed
+                    // this is an unwrap, different costs for tokens vs native
+                    + (toNative ? 50_000 : 100_000)
+                ) * feeDirector.multiplier * baselineFee
+            ) / 1 ether;
             // fees must not be greater than limit
             fees = fees > feeDirector.limit ? feeDirector.limit : fees;
         }
@@ -154,18 +150,19 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         toRecipient = _value - fees;
     }
 
-    function feeInfo(
-        bool toNative, uint256 _value, uint256 runner,
-        FeeDirector calldata feeDirector
-    ) external view returns(uint256, uint256) {
+    function feeInfo(bool toNative, uint256 _value, uint256 runner, FeeDirector calldata feeDirector)
+        external
+        view
+        returns (uint256, uint256)
+    {
         return _feeInfo(toNative, _value, runner, feeDirector);
     }
 
-    function baseFee(bool excludePriority) external view returns(uint256) {
+    function baseFee(bool excludePriority) external view returns (uint256) {
         return _baseFee(excludePriority);
     }
 
-    function _baseFee(bool excludePriority) internal view returns(uint256) {
+    function _baseFee(bool excludePriority) internal view returns (uint256) {
         return EIP1559_ENABLED && excludePriority ? block.basefee : tx.gasprice;
     }
 
@@ -195,16 +192,17 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @notice that the sender does not matter, so this method could be called via
      * multicall for more efficient gas savings and still attribute tokens to the validator appropriately
      */
-    function safeExecuteSignaturesWithAutoGasLimit(
-        address runner,
-        bytes calldata _data,
-        bytes calldata _signatures
-    ) external payable nonReentrantUint256(RUNNER_SLOT, uint256(uint96(gasleft())) | (uint256(uint160(runner)) << 96)) {
+    function safeExecuteSignaturesWithAutoGasLimit(address runner, bytes calldata _data, bytes calldata _signatures)
+        external
+        payable
+        nonReentrantUint256(RUNNER_SLOT, uint256(uint96(gasleft())) | (uint256(uint160(runner)) << 96))
+    {
         if (!IBridgeValidators(validatorsFilter).isValidator(runner)) {
             revert NotPayable();
         }
-        IBasicForeignAMB(address(IBasicAMBMediator(bridge).bridgeContract()))
-            .safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
+        IBasicForeignAMB(address(IBasicAMBMediator(bridge).bridgeContract())).safeExecuteSignaturesWithAutoGasLimit(
+            _data, _signatures
+        );
     }
     /**
      * updates the filter to any contract.
@@ -215,7 +213,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         IBridgeValidators(_validatorsFilter).isValidator(address(0));
         validatorsFilter = _validatorsFilter;
     }
-    /** mev protection management */
+    /**
+     * mev protection management
+     */
     function setValidatorStatus(address _validator, bool _isValidator) external payable onlyOwner {
         isValidator[_validator] = _isValidator;
     }

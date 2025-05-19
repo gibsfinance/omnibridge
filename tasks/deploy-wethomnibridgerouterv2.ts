@@ -26,16 +26,18 @@ task('deploy-wethomnibridgerouterv2', 'deploys the weth omnibridge router')
     const inputs = [args.bridge, args.weth, signer.address] as const
     const latest = await hre.ethers.provider.getBlock('latest')
     const wethomnibridgerouterv2 = await WETHOmnibridgeRouterV2.deploy(...inputs, {
-      maxFeePerGas: latest!.baseFeePerGas,
-      maxPriorityFeePerGas: latest!.baseFeePerGas as bigint / 50n,
+      maxFeePerGas: latest!.baseFeePerGas! * 2n,
+      maxPriorityFeePerGas: latest!.baseFeePerGas as bigint / 10n,
     })
     console.log('new WETHOmnibridgeRouterV2(%o, %o, %o) => %o', ...inputs, await wethomnibridgerouterv2.getAddress())
     const tx = wethomnibridgerouterv2.deploymentTransaction()!
     console.log('@%o', tx.hash)
     await tx.wait()
-    await hre.run('verify:verify', {
-      address: await wethomnibridgerouterv2.getAddress(),
-      contract: contractId,
-      constructorArguments: inputs,
-    })
+    if (hre.network.name !== 'hardhat') {
+      await hre.run('verify:verify', {
+        address: await wethomnibridgerouterv2.getAddress(),
+        contract: contractId,
+        constructorArguments: inputs,
+      })
+    }
   })

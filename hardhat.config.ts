@@ -1,6 +1,5 @@
 import type { HardhatUserConfig } from 'hardhat/config'
 import 'solidity-coverage'
-import 'hardhat-tracer'
 import '@nomicfoundation/hardhat-toolbox'
 import '@solidstate/hardhat-4byte-uploader'
 import '@nomicfoundation/hardhat-verify'
@@ -54,17 +53,16 @@ const config: HardhatUserConfig = {
     compilers: [
       {
         version: '0.8.24',
+        settings: {
+          evmVersion: 'cancun',
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+          viaIR: false
+        },
       },
     ],
-    settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200,
-      },
-    },
-  },
-  tracer: {
-    enabled: true,
   },
   sourcify: {
     enabled: true,
@@ -73,7 +71,7 @@ const config: HardhatUserConfig = {
     hardhat: {
       accounts: {
         // this is the mnemonic used when the `--deterministic` flag is passed to ganache
-        mnemonic: 'myth like bonus scare over problem client lizard pioneer submit female collect',
+        mnemonic: process.env.MNEMONIC ?? 'myth like bonus scare over problem client lizard pioneer submit female collect',
         accountsBalance: (10n ** 28n).toString(),
       },
       initialBaseFeePerGas: 0,
@@ -82,22 +80,22 @@ const config: HardhatUserConfig = {
       allowUnlimitedContractSize: true,
       ...(process.env.CHAIN
         ? {
-            forking:
-              process.env.CHAIN === 'mainnet'
+          forking:
+            process.env.CHAIN === 'mainnet'
+              ? {
+                url: 'https://rpc-ethereum.g4mm4.io',
+                blockNumber: 22_517_700,
+              }
+              : process.env.CHAIN === 'bsc'
                 ? {
-                    url: 'https://rpc-ethereum.g4mm4.io',
-                    blockNumber: 19_926_341,
-                  }
-                : process.env.CHAIN === 'bsc'
-                  ? {
-                      url: process.env.RPC_56 || 'https://binance.llamarpc.com',
-                      blockNumber: 40_615_914,
-                    }
-                  : {
-                      url: 'https://badurl',
-                      blockNumber: 1,
-                    },
-          }
+                  url: process.env.RPC_56 || 'https://binance.llamarpc.com',
+                  blockNumber: 40_615_914,
+                }
+                : {
+                  url: 'https://badurl',
+                  blockNumber: 1,
+                },
+        }
         : {}),
       chains,
     },
