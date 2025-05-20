@@ -95,7 +95,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
             uint256 fees;
             uint256 toRecipient = _value;
-            if (runner > 0) {
+            if (runner > 1) {
                 // setting at the 1st slot from the right is a signal to use the limit as the fixed fee
                 (fees, toRecipient) = _feeInfo(toNative, _value, runner, feeDirector);
             }
