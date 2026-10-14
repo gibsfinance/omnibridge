@@ -18,11 +18,11 @@ const chains = {
       cancun: 17_233_002,
     },
   },
+  // PulseChain block headers carry no blob gas fields, so the fork must stop at shanghai.
   369: {
     hardforkHistory: {
       merge: 17_233_000,
       shanghai: 17_233_001,
-      cancun: 17_233_002,
     },
   },
   943: {
