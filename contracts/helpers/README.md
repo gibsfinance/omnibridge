@@ -43,3 +43,47 @@ The upper calls are identical to the following 3 sequential transactions:
 * Call `WBNB_on_xDAI.approve(Omnibridge, value)` in xDAI
 * Call `Omnibridge.relayTokens(WBNB_on_xDAI, value)` in xDAI
 * Call `WBNB.withdraw(value - fee)` in BSC
+
+## HomeFeeLedger
+
+`HomeFeeLedger` collects every bridge fee on the home side (PulseChain) in a ledger.
+It never replaces or changes the existing routers.
+A fee is a gibs fee plus an optional partner fee. The partner fee is added to the gibs fee.
+
+### Fees and limits
+
+* The gibs rate is set by the admin. It can never be above `MAXIMUM_GIBS_RATE` (100 basis points, 1%).
+* A partner registers freely with `registerPartner(payout, rate)`. Ids start at 1. Id 0 means no partner.
+* A partner rate can never be above `MAXIMUM_PARTNER_RATE` (100 basis points).
+* The caller of a transfer states `maximumTotalRate`. Outbound transfers revert above it.
+  Inbound transfers charge only up to it, and cut the partner fee first, then the gibs fee.
+* The mediator list, `wNative` and `gibsCollector` are fixed at construction.
+* The admin can set the gibs rate and rescue unaccounted tokens. Nothing else.
+  The admin cannot touch the ledger, the collector, the mediators or any partner.
+
+### Home to foreign
+
+Call `relay(mediator, token, amount, receiver, data, partnerId, maximumTotalRate)` after you approve the token.
+For native PLS call `relayNative(mediator, receiver, data, partnerId, maximumTotalRate)` with a value.
+The contract measures what it receives (fee-on-transfer tokens are safe), credits the fees,
+and calls `relayTokensAndCall(token, receiver, rest, data)` on the mediator.
+`data` is passed unchanged, so it can carry the `FeeDirector` of the existing routers.
+The existing mediators keep their own fee as well (0.3% on the PulseChain mediators when this was written).
+
+### Foreign to home
+
+Send the tokens with `relayTokensAndCall` to the ledger address on the foreign chain.
+Set `data` to `abi.encode(address recipient, uint256 partnerId, uint16 maximumTotalRate, bool unwrap)` (128 bytes).
+The mediator transfers the tokens, then calls `onTokenBridged` and ignores a failure.
+So after its caller check, `onTokenBridged` never reverts:
+
+* It uses the smaller of `value` and the balance that is not owed to anyone.
+* Malformed data, a zero recipient or nothing available leaves the tokens outside the ledger (`Skipped` is emitted).
+  The admin can move them with `rescueUnaccounted`.
+* If the payment to the recipient fails, the recipient is credited in the ledger.
+  When `unwrap` fails, the recipient is credited WPLS, not PLS.
+
+### Withdrawing
+
+`withdraw(token)` and `withdrawTo(token, to)` pay the caller's balance. The zero address as token means native coin.
+`owed[token][account]` is the balance and `totalOwed[token]` is the sum.

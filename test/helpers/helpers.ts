@@ -135,3 +135,10 @@ export function contains(args: Record<string, unknown>, key: string, value: unkn
         chai.expect(args[key]).to.be.equal(value);
     }
 }
+
+// encodes the data HomeFeeLedger.onTokenBridged expects (128 bytes)
+export const feeLedgerInstruction = (recipient: string, partnerId = 0n, maximumTotalRate = 10_000n, unwrap = false) =>
+    ethers.AbiCoder.defaultAbiCoder().encode(
+        ['address', 'uint256', 'uint16', 'bool'],
+        [recipient, partnerId, maximumTotalRate, unwrap],
+    )

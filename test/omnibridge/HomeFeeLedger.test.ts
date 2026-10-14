@@ -10,8 +10,7 @@ const coder = ethers.AbiCoder.defaultAbiCoder()
 const amount = 1_000_000n
 const SkipReason = { MalformedData: 0n, ZeroRecipient: 1n, NothingAvailable: 2n, Reentrant: 3n }
 
-export const instruction = (recipient: string, partnerId = 0n, maximumTotalRate = 10_000n, unwrap = false) =>
-    coder.encode(['address', 'uint256', 'uint16', 'bool'], [recipient, partnerId, maximumTotalRate, unwrap])
+const instruction = helpers.feeLedgerInstruction
 
 describe('HomeFeeLedger', () => {
     let owner!: HardhatEthersSigner
@@ -147,7 +146,8 @@ describe('HomeFeeLedger', () => {
     describe('inbound', () => {
         it('splits with a partner and pays the rest', async () => {
             const id = await registerPartner(50)
-            await deliver(instruction(recipient.address, id))
+            const receipt = await (await deliver(instruction(recipient.address, id))).wait()
+            console.log(`      inbound split with partner, gas for the whole delivery: ${receipt.gasUsed}`)
             expect(await token.balanceOf(recipient)).to.equal(amount - 3_000n - 5_000n)
             expect(await ledger.owed(token, collector)).to.equal(3_000n)
             expect(await ledger.owed(token, payout)).to.equal(5_000n)
@@ -370,9 +370,12 @@ describe('HomeFeeLedger', () => {
         it('takes fees and bridges the rest with data unchanged', async () => {
             const id = await registerPartner(50)
             const data = '0x1234abcd'
-            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, data, id, 80))
+            const pending = ledger.connect(user).relay(mediator, token, amount, toForeign, data, id, 80)
+            await expect(pending)
                 .to.emit(mediator, 'TokensBridgingInitiated')
                 .withArgs(token, ledger, amount - 8_000n, toForeign, data)
+            const receipt = await (await pending).wait()
+            console.log(`      outbound relay with partner, gas: ${receipt.gasUsed}`)
             expect(await token.balanceOf(mediator)).to.equal(amount - 8_000n)
             expect(await ledger.owed(token, collector)).to.equal(3_000n)
             expect(await ledger.owed(token, payout)).to.equal(5_000n)
