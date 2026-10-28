@@ -11,6 +11,7 @@ contract AMBMock {
     uint256 public nonce;
     uint256 public messageSourceChainId;
     mapping(bytes32 => bool) public messageCallStatus;
+    mapping(bytes32 => bool) public relayedMessages;
     mapping(bytes32 => address) public failedMessageSender;
     mapping(bytes32 => address) public failedMessageReceiver;
     mapping(bytes32 => bytes32) public failedMessageDataHash;
@@ -33,6 +34,9 @@ contract AMBMock {
         messageId = _messageId;
         transactionHash = _messageId;
         messageSourceChainId = 1337;
+        // the real foreign bridge records the message as relayed before it calls
+        // the executor, so recovery can tell a relayed message from a pending one
+        relayedMessages[_messageId] = true;
         (bool status, ) = _contract.call{ gas: _gas }(_data);
         messageSender = address(0);
         messageId = bytes32(0);
