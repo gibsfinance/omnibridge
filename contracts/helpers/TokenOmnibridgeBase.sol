@@ -201,6 +201,18 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param signatures the validator signatures over that message
      */
     function recover(bytes calldata message, bytes calldata signatures) external nonReentrant {
+        _recover(message, signatures);
+    }
+
+    /**
+     * @dev The recovery body, shared by the public {recover} and by the single
+     * delivery entry {safeExecuteSignaturesWithAutoGasLimit}. It follows
+     * checks-effects-interactions: it records the message as processed before it
+     * moves any tokens, so a re-entrant call for the same message finds it
+     * already processed. It takes no reentrancy modifier of its own; both
+     * callers hold one.
+     */
+    function _recover(bytes calldata message, bytes calldata signatures) internal {
         (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(message);
         // The message must have run through this router's own mediator. The
         // mediator is the only caller {onTokenBridged} accepts, so any message
@@ -494,12 +506,32 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         payable
         nonReentrantUint256(RUNNER_SLOT, uint256(uint96(gasleft())) | (uint256(uint160(runner)) << 96))
     {
+        // One entry for every situation. A caller (the delivery service, or
+        // anyone) always calls this function with the signed message. The branch
+        // decides what the message needs:
+        //
+        //   - If the bridge has already relayed this message, a first delivery
+        //     ran. The bridge never relays a message twice, so the only reason
+        //     to be here again is that the first delivery stranded. Finish it
+        //     with no tip. {_recover} re-checks everything (signatures, the two
+        //     bridge flags, that it targeted this router, and that it has not
+        //     been paid) and reverts a message that was already completed.
+        //
+        //   - Otherwise this is a fresh delivery. The runner must be a known
+        //     validator (the existing protection against a stranger claiming the
+        //     fee), and the message runs through the bridge, which calls back
+        //     into {onTokenBridged} with the runner attributed for the fee.
+        IForeignArbitraryMessageBridge arbitraryMessageBridge =
+            IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
+        (bytes32 messageIdentifier,,) = _parseMessage(_data);
+        if (arbitraryMessageBridge.relayedMessages(messageIdentifier)) {
+            _recover(_data, _signatures);
+            return;
+        }
         if (!IBridgeValidators(validatorsFilter).isValidator(runner)) {
             revert NotPayable();
         }
-        IBasicForeignAMB(address(IBasicAMBMediator(bridge).bridgeContract())).safeExecuteSignaturesWithAutoGasLimit(
-            _data, _signatures
-        );
+        IBasicForeignAMB(address(arbitraryMessageBridge)).safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
     }
     /**
      * updates the filter to any contract.
