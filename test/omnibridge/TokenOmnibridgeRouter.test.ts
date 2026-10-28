@@ -4,6 +4,7 @@ import { expect } from 'chai'
 import * as helpers from '../helpers/helpers'
 import * as setup from '../setup'
 import * as ethers from 'ethers'
+import { buildMessage, handleNativeCall } from '../helpers/ambMessage'
 import { AMBMock, ForeignOmnibridge, StubMediator, WETH, TokenOmnibridgeRouter__factory, IERC20 } from '../../artifacts/types'
 import type { TokenOmnibridgeRouter } from '../../artifacts/types/contracts/helpers/TokenOmnibridgeRouter'
 import type { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers'
@@ -128,6 +129,21 @@ describe('TokenOmnibridgeRouter', () => {
         describe('mediator', () => {
             let WETHRouter!: TokenOmnibridgeRouter
             let stubMediator!: StubMediator
+            let messageCounter = 0
+
+            /** Carries the fee director inside a real message addressed to the stub mediator, recipient = the router. */
+            const wrapInMessage = async (feeData: string, bridgedToken: ethers.Addressable = token) =>
+                buildMessage({
+                    messageId: ethers.keccak256(ethers.toUtf8Bytes(`runner-fee-${messageCounter++}`)),
+                    sender: await stubMediator.getAddress(),
+                    executor: await stubMediator.getAddress(),
+                    innerCall: handleNativeCall({
+                        token: await bridgedToken.getAddress(),
+                        recipient: await WETHRouter.getAddress(),
+                        value,
+                        data: feeData,
+                    }),
+                })
 
             beforeEach(async () => {
                 const StubMediator = await hre.ethers.getContractFactory('StubMediator')
@@ -156,7 +172,8 @@ describe('TokenOmnibridgeRouter', () => {
                     ['address', 'uint256', 'uint256', 'uint256'],
                     [await user.getAddress(), 0b0010, oneEther, oneEther / 10n],
                 )
-                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
+                const message = await wrapInMessage(data)
+                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
@@ -171,7 +188,7 @@ describe('TokenOmnibridgeRouter', () => {
                     weth: await token.balanceOf(addr),
                 })
                 const [wethRouterBefore, userBefore, v1Before, v2Before] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
-                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x', {
+                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x', {
                     maxPriorityFeePerGas: 0,
                 })
                 const receipt = await tx.wait()
@@ -194,7 +211,8 @@ describe('TokenOmnibridgeRouter', () => {
                     ['address', 'uint256', 'uint256', 'uint256'],
                     [await user.getAddress(), 0b0100, oneEther, oneEther / 10n],
                 )
-                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
+                const message = await wrapInMessage(data)
+                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
@@ -209,7 +227,7 @@ describe('TokenOmnibridgeRouter', () => {
                     weth: await token.balanceOf(addr),
                 })
                 const [wethRouterBefore, userBefore, v1Before, v2Before] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
-                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x', {
+                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x', {
                     maxPriorityFeePerGas: 0,
                 })
                 const receipt = await tx.wait()
@@ -236,7 +254,8 @@ describe('TokenOmnibridgeRouter', () => {
                     [await user.getAddress(), 0b0110, oneEther, oneEther / 10n],
                 )
                 await stubMediator.setToken(token2)
-                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
+                const message = await wrapInMessage(data, token2)
+                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
@@ -252,7 +271,7 @@ describe('TokenOmnibridgeRouter', () => {
                     token2: await token2.balanceOf(addr),
                 })
                 const [wethRouterBefore, userBefore, v1Before, v2Before] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
-                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x', {
+                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x', {
                     maxPriorityFeePerGas: 0,
                 })
                 const receipt = await tx.wait()
@@ -286,7 +305,8 @@ describe('TokenOmnibridgeRouter', () => {
                     [await user.getAddress(), 0b1000, oneEther, oneEther / feeRatio],
                 )
                 // await stubMediator.setToken(token2)
-                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x'))
+                const message = await wrapInMessage(data)
+                await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotPayable')
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
@@ -301,7 +321,7 @@ describe('TokenOmnibridgeRouter', () => {
                     weth: await token.balanceOf(addr),
                 })
                 const [wethRouterBefore, userBefore, v1Before, v2Before] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
-                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, data, '0x', {
+                const tx = await WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x', {
                     maxPriorityFeePerGas: 0,
                 })
                 const receipt = await tx.wait()

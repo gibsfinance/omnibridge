@@ -32,8 +32,8 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
     let owner!: HardhatEthersSigner
     let user!: HardhatEthersSigner
     let stranger!: HardhatEthersSigner
-    let validators!: ethers.Wallet[]
-    let outsider!: ethers.Wallet
+    let validators!: ethers.HDNodeWallet[]
+    let outsider!: ethers.HDNodeWallet
     let token!: any
     let mediator!: any
     let amb!: any
@@ -113,7 +113,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         return ethers.concat([selector, encoded])
     }
 
-    const sign = async (message: string, signerWallets: ethers.Wallet[]) => {
+    const sign = async (message: string, signerWallets: ethers.HDNodeWallet[]) => {
         const pieces = []
         for (const wallet of signerWallets) {
             pieces.push(helpers.signatureToVRS(await wallet.signMessage(ethers.getBytes(message))))

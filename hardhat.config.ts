@@ -99,6 +99,13 @@ const config: HardhatUserConfig = {
         : {}),
       chains,
     },
+    // An anvil node that forks a live chain. Start it with, for example:
+    //   anvil --fork-url <rpc> --fork-block-number <n> --port 8545
+    // and run the tests with `--network localhost`. Nothing is broadcast to a live network.
+    localhost: {
+      url: process.env.ANVIL_URL || 'http://127.0.0.1:8545',
+      timeout: 600_000,
+    },
     localhardhat: {
       url: process.env.PROVIDER || 'http://localhost:8545',
     },

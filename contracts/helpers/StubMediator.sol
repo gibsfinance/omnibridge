@@ -7,6 +7,8 @@ contract StubMediator {
   address public immutable WETH;
   address public token;
   mapping(address => bool) public validators;
+  /// @dev Always false unless a test sets it, so the router takes the fresh delivery path.
+  mapping(bytes32 => bool) public relayedMessages;
   constructor(address _weth) {
     WETH = _weth;
   }
@@ -35,10 +37,21 @@ contract StubMediator {
   function setValidator(address _addr, bool _isValidator) external {
     validators[_addr] = _isValidator;
   }
+  /**
+   * @dev Stands in for the bridge's delivery call. Like the real bridge it receives a full
+   * Arbitrary Message Bridge message. It reads the inner handle call out of the message and
+   * hands the real token, value and fee director data to the caller's onTokenBridged.
+   * Layout: 32 id, 20 sender, 20 executor, 4 gas limit, 1 source length, 1 destination length,
+   * 1 data type, the two chain ids, then selector + abi.encode(address,address,uint256,bytes).
+   * Signatures are ignored.
+   */
   function safeExecuteSignaturesWithAutoGasLimit(
-    bytes calldata _data,
-    bytes calldata _signatures
+    bytes calldata _message,
+    bytes calldata
   ) external {
-    IERC20Receiver(msg.sender).onTokenBridged(token == address(0) ? WETH : token, 1 ether, _data);
+    uint256 innerStart = 79 + uint8(_message[76]) + uint8(_message[77]);
+    (address bridgedToken,, uint256 value, bytes memory feeData) =
+      abi.decode(_message[innerStart + 4:], (address, address, uint256, bytes));
+    IERC20Receiver(msg.sender).onTokenBridged(bridgedToken, value, feeData);
   }
 }
