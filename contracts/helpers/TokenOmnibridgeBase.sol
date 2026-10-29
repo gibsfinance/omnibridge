@@ -103,6 +103,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     bytes32 public constant RUNNER_SLOT = keccak256(abi.encode("omnibridgerouter.runner"));
 
     /**
+     * @dev The runner slot's idle value: no runner attributed, so the shared
+     * distribution pays no tip. It matches the reentrancy guard's not-entered
+     * sentinel, which is what the slot resets to after each attributed call.
+     */
+    uint256 private constant _IDLE_RUNNER = 1;
+
+    /**
      * @dev Initializes this contract.
      * @param _bridge address of the HomeOmnibridge/ForeignOmnibridge contract.
      * @param _wNative address of the WNative token used for wrapping/unwrapping native coins (e.g. WETH/WBNB/WXDAI).
@@ -145,39 +152,55 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // zero and records nothing, while the live bridge always returns the
         // executing identifier, so a real delivery is always recorded. A delivery
         // that later reverts unwinds this write along with everything else.
-        _recordProcessedMessage();
+        _markProcessed(_currentMessageId());
         uint256 balance = IERC20(_token).balanceOf(address(this));
         if (balance < _value) {
             // this covers the case of tax / reflection tokens
             // where the amount bridged is less than the amount received by this router
             _value = balance;
         }
-        if (_data.length == 20) {
+        _distributeDelivery(_token, _value, _data);
+    }
+
+    /**
+     * @dev Delivers `value` of `token` according to `data`, paying the delivery
+     * tip to the attributed runner when one is set (the runner slot holds more
+     * than the idle sentinel). Shared by {onTokenBridged} and {_recover}: both
+     * reach it with the runner slot already decided by the entry that called
+     * them, so finishing a stranded delivery through the single entry pays the
+     * runner the same tip a fresh delivery would, while a direct {recover} call
+     * (or a non-validator recovery, whose runner slot the entry cleared) leaves
+     * no runner attributed and pays the recipient in full. This is what gives a
+     * relayer a reason to finish a stranded delivery, so the strand cannot be
+     * used to deny the service.
+     */
+    function _distributeDelivery(address token, uint256 value, bytes memory data) internal {
+        if (data.length == 20) {
             // handling legacy wNative -> Native
-            require(_token == address(wNative));
-            wNative.withdraw(_value);
-            _distribute(true, address(wNative), Bytes.bytesToAddress(_data), _value);
-        } else {
-            FeeDirector memory feeDirector = abi.decode(_data, (FeeDirector));
-            // setting at the 0th slot from the right is a signal to unwrap the tokens
-            bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(wNative) == _token;
-            // handling wNative -> Native
-            if (toNative && _token == address(wNative)) {
-                wNative.withdraw(_value);
-            }
-            uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
-            uint256 fees;
-            uint256 toRecipient = _value;
-            if (runner > 1) {
-                // setting at the 1st slot from the right is a signal to use the limit as the fixed fee
-                (fees, toRecipient) = _feeInfo(toNative, _value, runner, feeDirector);
-            }
-            if (toRecipient > 0) {
-                _distribute(toNative, _token, feeDirector.recipient, toRecipient);
-            }
-            if (fees > 0) {
-                _distribute(toNative, _token, address(uint160(runner >> 96)), fees);
-            }
+            require(token == address(wNative));
+            wNative.withdraw(value);
+            _distribute(true, address(wNative), Bytes.bytesToAddress(data), value);
+            return;
+        }
+        FeeDirector memory feeDirector = abi.decode(data, (FeeDirector));
+        // setting at the 0th slot from the right is a signal to unwrap the tokens
+        bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(wNative) == token;
+        // handling wNative -> Native
+        if (toNative) {
+            wNative.withdraw(value);
+        }
+        uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
+        uint256 fees;
+        uint256 toRecipient = value;
+        if (runner > 1) {
+            // a runner is attributed: it earns the fee for completing the delivery
+            (fees, toRecipient) = _feeInfo(toNative, value, runner, feeDirector);
+        }
+        if (toRecipient > 0) {
+            _distribute(toNative, token, feeDirector.recipient, toRecipient);
+        }
+        if (fees > 0) {
+            _distribute(toNative, token, address(uint160(runner >> 96)), fees);
         }
     }
 
@@ -237,14 +260,17 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         (address token, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
         if (recipient != address(this)) revert NotForThisRouter();
 
-        processed[messageIdentifier] = true;
+        _markProcessed(messageIdentifier);
 
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance < value) {
             // same fee-on-transfer clamp the delivery path applies
             value = balance;
         }
-        _deliverWithoutFee(token, value, data);
+        // Same distribution as a fresh delivery: when this recovery came through
+        // the single entry with a validator runner, that runner earns the tip;
+        // a direct recover() or a non-validator leaves no runner, paying in full.
+        _distributeDelivery(token, value, data);
         emit DeliveryRecovered(messageIdentifier, token, recipient, value);
     }
 
@@ -267,28 +293,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // wrapped token to the same recipient instead of reverting
         wNative.deposit{value: amount}();
         IERC20(address(wNative)).safeTransfer(recipient, amount);
-    }
-
-    /**
-     * @dev Delivers a message's tokens with no fee, honouring the unwrap flag
-     * and the legacy twenty-byte form. Used by {recover}: a recovered message
-     * had no deliverer, so it carries no tip.
-     */
-    function _deliverWithoutFee(address token, uint256 value, bytes memory data) internal {
-        if (data.length == 20) {
-            require(token == address(wNative));
-            wNative.withdraw(value);
-            _distribute(true, address(wNative), Bytes.bytesToAddress(data), value);
-            return;
-        }
-        FeeDirector memory feeDirector = abi.decode(data, (FeeDirector));
-        bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(wNative) == token;
-        if (toNative) {
-            wNative.withdraw(value);
-        }
-        if (value > 0) {
-            _distribute(toNative, token, feeDirector.recipient, value);
-        }
     }
 
     function _feeInfo(bool toNative, uint256 _value, uint256 runner, FeeDirector memory feeDirector)
@@ -348,8 +352,14 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * calls the mediator, and the mediator reads it itself during the callback,
      * so a real delivery always has a non-zero identifier to record.
      */
-    function _recordProcessedMessage() internal {
-        bytes32 messageIdentifier = _currentMessageId();
+    /**
+     * @dev Marks a message paid so it can never be paid again. The one place
+     * `processed` is written: {onTokenBridged} feeds it the live identifier read
+     * from the bridge, {_recover} feeds it the identifier parsed from the signed
+     * message. A zero identifier (only a bridge stand-in in tests) records
+     * nothing.
+     */
+    function _markProcessed(bytes32 messageIdentifier) internal {
         if (messageIdentifier != bytes32(0)) {
             processed[messageIdentifier] = true;
         }
@@ -524,11 +534,20 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         IForeignArbitraryMessageBridge arbitraryMessageBridge =
             IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
         (bytes32 messageIdentifier,,) = _parseMessage(_data);
+        bool runnerIsValidator = IBridgeValidators(validatorsFilter).isValidator(runner);
         if (arbitraryMessageBridge.relayedMessages(messageIdentifier)) {
+            // Recovery is permissionless, but the tip is earned only by a known
+            // validator (the same gate the fresh delivery applies). A caller who
+            // is not a validator may still finish the delivery; clearing the
+            // runner slot leaves them no tip, so the shared distribution pays the
+            // recipient in full.
+            if (!runnerIsValidator) {
+                StorageSlot.getUint256Slot(RUNNER_SLOT).value = _IDLE_RUNNER;
+            }
             _recover(_data, _signatures);
             return;
         }
-        if (!IBridgeValidators(validatorsFilter).isValidator(runner)) {
+        if (!runnerIsValidator) {
             revert NotPayable();
         }
         IBasicForeignAMB(address(arbitraryMessageBridge)).safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);

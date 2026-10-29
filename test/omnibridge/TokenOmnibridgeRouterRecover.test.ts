@@ -356,5 +356,51 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await token.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
         })
+
+        it('a validator runner that recovers a strand through the single entry earns the tip', async () => {
+            // this is what gives a relayer a reason to finish a stranded delivery,
+            // so a griefer who strands a transfer cannot deny the service.
+            const runner = signers[4]
+            const caller = signers[5]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+
+            const messageId = nextMessageId()
+            const fee = value / 10n
+            // fixed-fee token delivery (no unwrap): recipient = user, fee = value/10
+            const innerCall = handleCall({ data: feeDirector(user.address, 0b0001n, fee) })
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+
+            await strand(messageId, innerCall)
+            expect(await token.balanceOf(router)).to.equal(value)
+            expect(await router.processed(messageId)).to.equal(false)
+
+            const recipientBefore = await token.balanceOf(user)
+            const runnerBefore = await token.balanceOf(runner.address)
+            // the validator runner is attributed; the caller can be anyone
+            await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures)
+
+            expect((await token.balanceOf(user)) - recipientBefore).to.equal(value - fee) // recipient gets value minus the tip
+            expect((await token.balanceOf(runner.address)) - runnerBefore).to.equal(fee) // runner earns the tip
+            expect(await token.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+
+        it('a non-validator recovering through the single entry earns no tip (recipient paid in full)', async () => {
+            const runner = signers[6] // not a validator
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: feeDirector(user.address, 0b0001n, value / 10n) })
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+
+            await strand(messageId, innerCall)
+            const recipientBefore = await token.balanceOf(user)
+            const runnerBefore = await token.balanceOf(runner.address)
+            await router.connect(runner).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures)
+
+            expect((await token.balanceOf(user)) - recipientBefore).to.equal(value) // full value, no tip taken
+            expect(await token.balanceOf(runner.address)).to.equal(runnerBefore) // non-validator earns nothing
+            expect(await router.processed(messageId)).to.equal(true)
+        })
     })
 })
