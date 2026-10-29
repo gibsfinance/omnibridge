@@ -301,4 +301,60 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             })
         })
     })
+
+    // The full lifecycle through the one function a deliverer calls. Assertions use
+    // plain state and balance reads (not the chai revert/emit matchers) so the test
+    // behaves identically on the in-process network and on an anvil node.
+    describe('full lifecycle through the single delivery entry', () => {
+        it('insufficient gas strands the transfer; re-running the same message through the single entry delivers it in full, once', async () => {
+            const messageId = nextMessageId()
+            // unwrap-to-native delivery whose end recipient is `stranger`
+            const innerCall = handleCall({ data: feeDirector(stranger.address, unwrapFlag) })
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+
+            // 1) deliver through the gas-limited path with INSUFFICIENT gas. strand() performs
+            //    the actual low-gas delivery (the mediator reports success, the router callback
+            //    runs out of gas) and leaves that stranded state in place.
+            await strand(messageId, innerCall)
+            expect(await token.balanceOf(router)).to.equal(value) // tokens stuck in the router
+            expect(await amb.relayedMessages(messageId)).to.equal(true) // bridge marked it relayed
+            expect(await amb.messageCallStatus(messageId)).to.equal(true) // mediator swallowed the failure, reported success
+            expect(await router.processed(messageId)).to.equal(false) // our flag was never set (the reverted frame rolled it back)
+            const recipientBefore = await hre.ethers.provider.getBalance(stranger)
+            expect(recipientBefore).to.equal(await hre.ethers.provider.getBalance(stranger)) // sanity: recipient unpaid so far
+
+            // 2) re-run the SAME message through the SINGLE ENTRY with ample gas. relayedMessages is
+            //    true, so the entry routes to recovery (no tip). runner is ignored on this branch.
+            await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(user.address, message, signatures)
+
+            // 3) delivered correctly: the recipient got the full value as native coin, the router is
+            //    empty, and the message is now recorded.
+            expect((await hre.ethers.provider.getBalance(stranger)) - recipientBefore).to.equal(value)
+            expect(await token.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+
+            // 4) the same message a third time pays nothing: the entry hits AlreadyProcessed and reverts.
+            const recipientAfter = await hre.ethers.provider.getBalance(stranger)
+            let reverted = false
+            try {
+                await router.connect(user).safeExecuteSignaturesWithAutoGasLimit.staticCall(user.address, message, signatures)
+            } catch {
+                reverted = true
+            }
+            expect(reverted).to.equal(true)
+            expect(await hre.ethers.provider.getBalance(stranger)).to.equal(recipientAfter) // no double payment
+        })
+
+        it('sufficient gas on the first delivery pays the recipient directly, no recovery needed', async () => {
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: feeDirector(stranger.address, unwrapFlag) })
+            const before = await hre.ethers.provider.getBalance(stranger)
+            // ample gas: the router callback completes inside the delivery
+            await deliver(messageId, innerCall, 3_000_000n)
+            expect((await hre.ethers.provider.getBalance(stranger)) - before).to.equal(value)
+            expect(await token.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+    })
 })
