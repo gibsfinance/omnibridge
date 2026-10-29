@@ -113,7 +113,7 @@ const config: HardhatUserConfig = {
       accounts: {
         mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
       },
-      url: 'https://rpc-ethereum.g4mm4.io',
+      url: process.env.RPC_1 || 'https://rpc-ethereum.g4mm4.io',
     },
     sepolia: {
       accounts: {
