@@ -502,7 +502,9 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const signatures = await sign(message, [validators[0], validators[1]])
             const attackerNativeBefore = await hre.ethers.provider.getBalance(attacker)
             const attackerWrappedBefore = await token.balanceOf(attacker)
-            await expect(router.connect(stranger).recover(message, signatures)).to.be.reverted
+            await expect(router.connect(stranger).recover(message, signatures))
+                .to.be.revertedWithCustomError(router, 'LegacyFormRequiresWrappedNative')
+                .withArgs(bridged.target)
             expect(await hre.ethers.provider.getBalance(attacker)).to.equal(attackerNativeBefore)
             expect(await token.balanceOf(attacker)).to.equal(attackerWrappedBefore)
             expect(await token.balanceOf(router)).to.equal(value)
@@ -513,6 +515,83 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             await router.connect(stranger).recover(honest.message, honestSignatures)
             expect(await token.balanceOf(victim)).to.equal(value)
             expect(await token.balanceOf(router)).to.equal(0n)
+        })
+
+        it('the entry recovery branch pays a bridged strand in the bridged token, and a validator runner earns the tip', async () => {
+            const runner = signers[4]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const tip = value / 10n
+            const messageId = nextMessageId()
+            const innerCall = bridgedCall(feeDirector(user.address, 0b0001n, tip))
+            await strand(messageId, innerCall, { asset: bridged })
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner.address, message, signatures)).to.equal(
+                Outcome.Recovered,
+            )
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures))
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(messageId, bridged.target, router.target, value)
+            expect(await bridged.balanceOf(user)).to.equal(value - tip)
+            expect(await bridged.balanceOf(runner)).to.equal(tip)
+            expect(await bridged.balanceOf(router)).to.equal(0n)
+            expect(await token.balanceOf(runner), 'no wrapped token moved').to.equal(0n)
+        })
+
+        it('a fresh bridged delivery through the entry mints the bridged token to the router and pays it on', async () => {
+            const runner = signers[4]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const tip = value / 10n
+            const messageId = nextMessageId()
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall: bridgedCall(feeDirector(user.address, 0b0001n, tip)) })
+            const wrappedInRouter = await token.balanceOf(router)
+            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner.address, message, '0x')).to.equal(
+                Outcome.Delivered,
+            )
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, '0x')
+            expect(await amb.relayedMessages(messageId)).to.equal(true)
+            expect(await router.processed(messageId)).to.equal(true)
+            expect(await bridged.balanceOf(user)).to.equal(value - tip)
+            expect(await bridged.balanceOf(runner)).to.equal(tip)
+            expect(await bridged.balanceOf(router)).to.equal(0n)
+            expect(await token.balanceOf(router), 'the wrapped token in the router is untouched').to.equal(wrappedInRouter)
+        })
+
+        // The twin: the message names the wrapped native token's own address, but the mediator mints its
+        // bridged twin. The unwrap flag asks for ether, which the router can only make from the real
+        // wrapped token. The router must pay the twin and never unwrap other users' wrapped token.
+        describe('a twin delivery with the unwrap flag set pays the twin token, not ether', () => {
+            const twinRecipient = () => ethers.Wallet.createRandom().address
+
+            it('fresh, through the entry', async () => {
+                const runner = signers[4]
+                await router.connect(owner).setValidatorStatus(runner.address, true)
+                await strandHonestWrappedDelivery()
+                const recipient = twinRecipient()
+                const messageId = nextMessageId()
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall: bridgedCall(feeDirector(recipient, unwrapFlag)) })
+                await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, '0x')
+                expect(await router.processed(messageId)).to.equal(true)
+                expect(await bridged.balanceOf(recipient), 'paid in the twin').to.equal(value)
+                expect(await hre.ethers.provider.getBalance(recipient), 'no ether').to.equal(0n)
+                expect(await token.balanceOf(recipient), 'no real wrapped token').to.equal(0n)
+                expect(await token.balanceOf(router), 'the honest wrapped strand is untouched').to.equal(value)
+                expect(await bridged.balanceOf(router)).to.equal(0n)
+            })
+
+            it('recovered, through recover()', async () => {
+                await strandHonestWrappedDelivery()
+                const recipient = twinRecipient()
+                const messageId = nextMessageId()
+                const innerCall = bridgedCall(feeDirector(recipient, unwrapFlag))
+                await strand(messageId, innerCall, { asset: bridged })
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                await router.connect(stranger).recover(message, await sign(message, [validators[0], validators[1]]))
+                expect(await bridged.balanceOf(recipient), 'paid in the twin').to.equal(value)
+                expect(await hre.ethers.provider.getBalance(recipient), 'no ether').to.equal(0n)
+                expect(await token.balanceOf(recipient), 'no real wrapped token').to.equal(0n)
+                expect(await token.balanceOf(router), 'the honest wrapped strand is untouched').to.equal(value)
+            })
         })
 
         it('reverts UnknownBridgedToken when the mediator has no bridged token for the message token', async () => {
@@ -858,6 +937,30 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 .to.emit(router, 'DeliveryRecovered')
                 .withArgs(messageId, bridgedAddress, router.target, value)
             expect(await bridged.balanceOf(user)).to.equal(value)
+            expect(await bridged.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+
+        it('recovers a deploy strand through the entry recovery branch; a validator runner earns the tip', async () => {
+            const runner = signers[4]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const tip = value / 10n
+            const messageId = nextMessageId()
+            const innerCall = deployCall(feeDirector(user.address, 0b0001n, tip))
+            await strandAtSmallestSuccessfulBudget(messageId, innerCall)
+            const bridgedAddress: string = await mediator.bridgedTokenAddress(otherChainToken)
+            const bridged = new ethers.Contract(bridgedAddress, erc20, hre.ethers.provider)
+            expect(await bridged.balanceOf(router), 'the delivery stranded in the router').to.equal(value)
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner.address, message, signatures)).to.equal(
+                Outcome.Recovered,
+            )
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures))
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(messageId, bridgedAddress, router.target, value)
+            expect(await bridged.balanceOf(user)).to.equal(value - tip)
+            expect(await bridged.balanceOf(runner)).to.equal(tip)
             expect(await bridged.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
         })

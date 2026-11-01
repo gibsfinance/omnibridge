@@ -83,7 +83,8 @@ describe('TokenOmnibridgeRouter', () => {
         await token.deposit({ value: value })
         await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
         const balanceBefore = await hre.ethers.provider.getBalance(user)
-        await expect(WETHRouter.connect(stubMediator).onTokenBridged(owner, value, await user.getAddress())).to.be.rejected
+        // the "token" is an account with no code, so reading its balance fails before any other check
+        await expect(WETHRouter.connect(stubMediator).onTokenBridged(owner, value, await user.getAddress())).to.be.revertedWithoutReason()
         await expect(WETHRouter.connect(stubMediator).onTokenBridged(token, value, '0x')).to.be.rejected
         await expect(WETHRouter.connect(owner).onTokenBridged(token, value, await user.getAddress())).to.be.rejected
         await expect(WETHRouter.connect(stubMediator).onTokenBridged(token, value, await user.getAddress())).to.be.fulfilled

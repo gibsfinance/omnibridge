@@ -116,6 +116,15 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param messageId the Arbitrary Message Bridge message identifier
      */
     error DeliveryNotCompleted(bytes32 messageId);
+    /**
+     * @dev The 20-byte legacy data form (a bare recipient address) means
+     * "unwrap the wrapped native token", so it is accepted only for that token.
+     * A bridged token whose other-chain address equals the wrapped native
+     * token (PulseChain's copy of WETH) arrives here as the mediator's bridged
+     * twin and is refused, so it can never unwrap other users' wrapped token.
+     * @param token the local token the delivery carries
+     */
+    error LegacyFormRequiresWrappedNative(address token);
 
     /**
      * @dev What a call to the single entry or to {recover} did. A relayer that
@@ -271,7 +280,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     function _distributeDelivery(address token, uint256 value, bytes memory data, bytes32 messageIdentifier) internal {
         if (data.length == 20) {
             // handling legacy wNative -> Native
-            require(token == address(wNative));
+            if (token != address(wNative)) revert LegacyFormRequiresWrappedNative(token);
             wNative.withdraw(value);
             _distribute(true, address(wNative), Bytes.bytesToAddress(data), value);
             return;

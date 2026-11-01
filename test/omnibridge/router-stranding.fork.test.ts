@@ -353,11 +353,11 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             expect(await bridgedWeth.balanceOf(router)).to.equal(value)
 
             const attack = await signed(attackId, attackCall)
-            const attackOutcome = await router.recover.staticCall(attack.message, attack.signatures).then(
-                () => 'did not revert',
-                () => 'reverted',
-            )
-            expect(attackOutcome, 'the attacker message cannot be recovered').to.equal('reverted')
+            // the exact refusal: the legacy form demands real WETH and the delivery carries the bridged twin
+            await expect(router.recover(attack.message, attack.signatures))
+                .to.be.revertedWithCustomError(router, 'LegacyFormRequiresWrappedNative')
+                .withArgs(BRIDGED_PULSECHAIN_WETH)
+            expect(await router.processed(attackId)).to.equal(false)
             expect(await hre.ethers.provider.getBalance(attacker)).to.equal(0n)
             expect(await weth.balanceOf(attacker)).to.equal(0n)
             expect(await weth.balanceOf(router), 'the honest WETH is untouched').to.equal(value)
