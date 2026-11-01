@@ -57,12 +57,16 @@ interface IBridgedTokenRegistry {
  * the message as delivered. Nothing a router can do inside {onTokenBridged}
  * makes the mediator report that failure, so the router cannot force the bridge
  * transaction to revert. The router therefore offers {recover}: anyone can
- * finish a stranded delivery afterwards by replaying the signed message. When
- * a known validator finishes it through {safeExecuteSignaturesWithAutoGasLimit},
- * that validator earns the same delivery tip a fresh delivery pays, so a relayer
- * has a reason to finish a strand. A direct {recover} call, or a caller who is
- * not a validator, attributes no runner, and the recipient receives the value
- * with no tip taken.
+ * finish a stranded delivery afterwards by replaying the signed message.
+ *
+ * WHO EARNS THE TIP. Any caller of {safeExecuteSignaturesWithAutoGasLimit} who
+ * names a validator as the runner attributes the tip to that validator; the
+ * caller itself does not have to be the validator. The tip is bound to the
+ * message the entry is handling: it is paid only on that message's own fresh
+ * delivery or recovery, so a relayer has a reason to finish a strand. A public
+ * {recover} call never pays a tip, even when it runs inside an entry that is
+ * handling a different message, and neither does a recovery through the entry
+ * that names a runner who is not a validator.
  */
 contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     using SafeERC20 for IERC20;
@@ -81,7 +85,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      */
     mapping(bytes32 => bool) public processed;
 
-    error NotPayable();
+    /**
+     * @dev A fresh delivery through {safeExecuteSignaturesWithAutoGasLimit}
+     * named a runner that the validators filter does not list as a validator.
+     * Only a validator may be attributed the tip on a fresh delivery.
+     * @param runner the address the caller named as the runner
+     */
+    error RunnerNotValidator(address runner);
     error WrongExecutor();
     error MessageNotRelayed();
     error MessageNotDelivered();
@@ -206,8 +216,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // 0th index is to use the limit as the fee amount
         // 1st index is to unwrap the tokens
         // 2nd is to ask the system to not include the priority fee
-        // 3rd is to use the multiplier as a factor of total tokens
+        // 3rd is to use the multiplier as a factor of total tokens; in this
+        //     mode the limit is NOT applied, the fee is capped only by the value
         // if a base fee is available it will only use that
+        // With neither bit 0 nor bit 3 set (the gas mode), the fee is the gas
+        // formula capped at the limit.
         uint256 settings;
         uint256 limit;
         uint256 multiplier;
@@ -216,7 +229,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     /**
      * @dev Bridged callback function used for unwrapping received tokens.
      * Can only be called by the associated Omnibridge contract.
-     * @param _token bridged token contract address, should be wNative.
+     * @param _token the local token the mediator just sent this router: the
+     * native token itself for handleNativeTokensAndCall, or the mediator's
+     * bridged token for the bridged-token callbacks. Any token is accepted;
+     * only the 20-byte legacy data form requires the wrapped native token.
      * @param _value amount of bridged/received tokens.
      * @param _data extra data passed alongside with relayTokensAndCall
      * on the other side of the bridge. Should contain coins receiver address.
@@ -241,16 +257,19 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     }
 
     /**
-     * @dev Delivers `value` of `token` according to `data`, paying the delivery
-     * tip to the attributed runner when one is set (the runner slot holds more
-     * than the idle sentinel). Shared by {onTokenBridged} and {_recover}: both
-     * reach it with the runner slot already decided by the entry that called
-     * them, so finishing a stranded delivery through the single entry pays the
-     * runner the same tip a fresh delivery would, while a direct {recover} call
-     * (or a non-validator recovery, whose runner slot the entry cleared) leaves
-     * no runner attributed and pays the recipient in full. This is what gives a
-     * relayer a reason to finish a stranded delivery, so the strand cannot be
-     * used to deny the service.
+     * @dev Delivers `value` of `token` according to `data`. Shared by
+     * {onTokenBridged} and {_recover}. The delivery tip is paid only to the
+     * runner {_runnerEarningTipFor} returns for `messageIdentifier`: the entry
+     * must be handling this very message with a runner attributed. So a
+     * stranded delivery finished through the single entry pays the runner the
+     * same tip a fresh delivery would, which gives a relayer a reason to finish
+     * a strand. A public {recover} call, a non-validator recovery (whose runner
+     * slot the entry cleared), or the payout of any other message that runs
+     * while the entry is busy pays the recipient in full.
+     * @param token the local token to pay out
+     * @param value the amount to pay out, split between recipient and tip
+     * @param data the fee director data, or the 20-byte legacy recipient form
+     * @param messageIdentifier the identifier of the message being paid
      */
     function _distributeDelivery(address token, uint256 value, bytes memory data, bytes32 messageIdentifier) internal {
         if (data.length == 20) {
@@ -284,10 +303,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Finishes a delivery that stranded in this router, by replaying the
-     * signed Arbitrary Message Bridge message. A direct call attributes no
-     * runner, so the recipient receives the value with no delivery tip taken.
-     * (A validator that finishes the strand through
-     * {safeExecuteSignaturesWithAutoGasLimit} earns the tip instead.)
+     * signed Arbitrary Message Bridge message. A call to this function never
+     * pays a delivery tip, whoever makes it and whenever it runs: the
+     * recipient receives the full value. (A validator named as runner on
+     * {safeExecuteSignaturesWithAutoGasLimit} earns the tip when that entry
+     * finishes the same message.)
      *
      * The caller supplies the exact message bytes and the validator signatures,
      * the same pair the bridge accepted. This function trusts nothing the caller
@@ -311,10 +331,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @dev Runs {_recover} while holding the reentrancy guard that
      * {onTokenBridged} also holds. Both recovery paths go through here: the
      * public {recover} and the recovery branch of the single delivery entry.
-     * The entry's own guard is the runner slot, not this one, so without this a
-     * payout recipient could re-enter {recover} (or make the bridge deliver to
-     * {onTokenBridged}) while the outer runner is still attributed, and that
-     * unrelated payout would pay the outer runner a tip.
+     * The entry's own guard is the runner slot, not this one, so this guard is
+     * what stops a payout recipient from re-entering {recover} (or making the
+     * bridge deliver to {onTokenBridged}) in the middle of a recovery. The tip
+     * itself is bound to the message (see {_runnerEarningTipFor}), so a payout
+     * of another message would pay no tip even without this guard.
      */
     function _recoverWithReentrancyGuard(bytes calldata message, bytes calldata signatures) internal nonReentrant {
         _recover(message, signatures);
@@ -361,9 +382,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (balance < value) revert InsufficientBalanceForRecovery(localToken, balance, value);
 
         _markProcessed(messageIdentifier);
-        // Same distribution as a fresh delivery: when this recovery came through
-        // the single entry with a validator runner, that runner earns the tip;
-        // a direct recover() or a non-validator leaves no runner, paying in full.
+        // Same distribution as a fresh delivery: when the single entry is handling
+        // this very message with a validator runner, that runner earns the tip;
+        // a public recover() or a non-validator pays the recipient in full.
         _distributeDelivery(localToken, value, data, messageIdentifier);
         emit DeliveryRecovered(messageIdentifier, localToken, recipient, value);
     }
@@ -429,11 +450,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (feeDirector.settings << 255 >> 255 == 1) {
             fees = feeDirector.limit;
         } else if (feeDirector.settings << 252 >> 255 == 1) {
+            // a share of the value; the limit is deliberately not applied here,
+            // only the value cap below bounds this fee
             fees = (_value * feeDirector.multiplier) / 1 ether;
         } else {
             // a runner has been named (does not have to match sender)
             uint256 gasUsed = uint256(uint96(runner)) - gasleft();
-            // extra 50k added for 2x transfer handling + 10%
+            // gas mode: extra 50k added for 2x transfer handling + 10%
             // to cover profit motive + risk compensation
             uint256 baselineFee = _baseFee((feeDirector.settings << 253 >> 255) == 1);
             fees = (
@@ -735,7 +758,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * requires that {onTokenBridged} recorded the message, and reverts
      * {DeliveryNotCompleted} otherwise: this router's own delivery is all or
      * nothing. A message for any other recipient gets only the bridge's check.
-     * @param runner the validator you would like to attribute this method call to
+     * @param runner the validator to attribute the tip to. Any caller may name
+     * any validator; the tip goes to the runner, not to the caller. A fresh
+     * delivery reverts {RunnerNotValidator} for a runner that is not a
+     * validator; a recovery accepts any runner but pays a non-validator no tip.
      * @param _data bytes to be relayed
      * @param _signatures bytes blob with signatures to be validated
      * @notice that the sender does not matter, so this method could be called via
@@ -773,15 +799,16 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         //   - If the bridge has already relayed this message, a first delivery
         //     ran. The bridge never relays a message twice, so the only reason
         //     to be here again is that the first delivery stranded. Finish it,
-        //     paying the tip to the runner only when the runner is a known
+        //     paying the tip to the named runner only when that runner is a
         //     validator. {_recover} re-checks everything (signatures, the two
         //     bridge flags, that it targeted this router, and that it has not
         //     been paid) and reverts a message that was already completed.
         //
-        //   - Otherwise this is a fresh delivery. The runner must be a known
+        //   - Otherwise this is a fresh delivery. The named runner must be a
         //     validator (the existing protection against a stranger claiming the
         //     fee), and the message runs through the bridge, which calls back
-        //     into {onTokenBridged} with the runner attributed for the fee.
+        //     into {onTokenBridged}; that payout earns the tip because its live
+        //     identifier is the one the entry recorded.
         IForeignArbitraryMessageBridge arbitraryMessageBridge =
             IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
         bool runnerIsValidator = IBridgeValidators(validatorsFilter).isValidator(runner);
@@ -798,7 +825,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             return;
         }
         if (!runnerIsValidator) {
-            revert NotPayable();
+            revert RunnerNotValidator(runner);
         }
         IBasicForeignAMB(address(arbitraryMessageBridge)).safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
         if (_messageDeliversToThisRouter(_data) && !processed[messageIdentifier]) {

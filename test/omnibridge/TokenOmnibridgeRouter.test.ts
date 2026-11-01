@@ -174,7 +174,7 @@ describe('TokenOmnibridgeRouter', () => {
                 )
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'NotPayable')
+                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
                 await WETHRouter.connect(owner).setValidatorStatus(v1, true)
@@ -213,7 +213,7 @@ describe('TokenOmnibridgeRouter', () => {
                 )
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'NotPayable')
+                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
                 await WETHRouter.connect(owner).setValidatorStatus(v1, true)
@@ -256,7 +256,7 @@ describe('TokenOmnibridgeRouter', () => {
                 await stubMediator.setToken(token2)
                 const message = await wrapInMessage(data, token2)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'NotPayable')
+                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
                 await WETHRouter.connect(owner).setValidatorStatus(v1, true)
@@ -307,7 +307,7 @@ describe('TokenOmnibridgeRouter', () => {
                 // await stubMediator.setToken(token2)
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'NotPayable')
+                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
                 // no event emitted
                 await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
                 await WETHRouter.connect(owner).setValidatorStatus(v1, true)

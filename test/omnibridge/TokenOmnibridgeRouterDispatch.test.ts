@@ -52,8 +52,8 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             const message = freshMessage(feeDirector(user.address, percentFlag, oneEther, oneEther / 100n))
             await expect(router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x')).to.be.revertedWithCustomError(
                 router,
-                'NotPayable',
-            )
+                'RunnerNotValidator',
+            ).withArgs(runner.address)
             expect(await token.balanceOf(user)).to.equal(0n)
         })
 
