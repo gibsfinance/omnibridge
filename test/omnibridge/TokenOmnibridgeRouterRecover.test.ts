@@ -634,6 +634,44 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         })
     })
 
+    // The fresh-delivery branch of the single entry cannot hold the reentrancy guard: the bridge call
+    // must re-enter onTokenBridged. While that bridge call runs, code the attacker controls (the target
+    // of an arbitrary message, or a hostile token) can call the public recover() for someone else's
+    // strand. The tip belongs to the message the entry is handling, never to that other payout.
+    describe('recover() called from inside a fresh delivery through the single entry', () => {
+        it('pays the victim in full and gives the runner nothing from the victim payout', async () => {
+            const runner = signers[4]
+            const victim = signers[8]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
+            const tip = value / 10n
+
+            // the victim's strand: a fixed-tip wrapped-token delivery
+            const victimId = nextMessageId()
+            const victimCall = handleCall({ data: feeDirector(victim.address, 0b0001n, tip) })
+            await strand(victimId, victimCall)
+            const victimMessage = buildMessage({ messageId: victimId, executor: mediator.target as string, innerCall: victimCall })
+            await recoverer.arm(router, victimMessage, await sign(victimMessage, [validators[0], validators[1]]))
+
+            // the attacker's message: an arbitrary message whose target is the attacker's contract
+            const attackId = nextMessageId()
+            const attackCall = recoverer.interface.encodeFunctionData('onTokenTransferReceived', [ethers.ZeroAddress, 0n])
+            const attackMessage = buildMessage({ messageId: attackId, executor: await recoverer.getAddress(), innerCall: attackCall })
+
+            const victimBefore = await token.balanceOf(victim)
+            const runnerBefore = await token.balanceOf(runner)
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, attackMessage, '0x')
+
+            // the inner recover() really ran inside the entry's fresh delivery
+            expect(await recoverer.reentrantCallMade()).to.equal(true)
+            expect(await recoverer.reentrantCallSucceeded()).to.equal(true)
+            expect(await router.processed(victimId)).to.equal(true)
+            expect((await token.balanceOf(victim)) - victimBefore, 'the victim is paid in full').to.equal(value)
+            expect((await token.balanceOf(runner)) - runnerBefore, 'the runner earns nothing from that payout').to.equal(0n)
+            expect(await token.balanceOf(router)).to.equal(0n)
+        })
+    })
+
     // The native coin payout must not hand the recipient all remaining gas: a recipient that burns it
     // leaves the router 1/64, too little to fall back to the wrapped token, and the delivery strands.
     describe('native payout gas', () => {

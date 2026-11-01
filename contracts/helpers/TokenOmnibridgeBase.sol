@@ -154,6 +154,23 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     uint256 private constant _IDLE_RUNNER = 1;
 
     /**
+     * @dev The storage slot that holds the identifier of the message the single
+     * entry {safeExecuteSignaturesWithAutoGasLimit} is handling right now. A
+     * payout earns the runner's tip only when its own message identifier equals
+     * this one, so code that runs during the entry (an arbitrary message's
+     * target, a hostile token) cannot make some other payout pay the runner.
+     */
+    bytes32 private constant ENTRY_MESSAGE_SLOT = keccak256(abi.encode("omnibridgerouter.entryMessage"));
+
+    /**
+     * @dev The entry message slot's idle value: no entry is running. It is not
+     * zero, so each entry rewrites a non-zero slot instead of paying for a
+     * fresh one. No bridge message identifier is ever 1 (the identifier
+     * carries a version prefix in its high bytes).
+     */
+    bytes32 private constant _IDLE_ENTRY_MESSAGE = bytes32(uint256(1));
+
+    /**
      * @dev The most gas a native coin payout hands the recipient (the call adds
      * the 2,300 stipend on top). Without a cap a recipient that burns its gas
      * leaves this router 1/64 of what remained, too little to fall back to the
@@ -180,6 +197,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         _wNative.approve(address(_bridge), type(uint256).max);
         validatorsFilter = address(this);
         EIP1559_ENABLED = _EIP1559_ENABLED;
+        StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = _IDLE_ENTRY_MESSAGE;
     }
 
     struct FeeDirector {
@@ -211,14 +229,15 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // zero and records nothing, while the live bridge always returns the
         // executing identifier, so a real delivery is always recorded. A delivery
         // that later reverts unwinds this write along with everything else.
-        _markProcessed(_currentMessageId());
+        bytes32 messageIdentifier = _currentMessageId();
+        _markProcessed(messageIdentifier);
         uint256 balance = IERC20(_token).balanceOf(address(this));
         if (balance < _value) {
             // this covers the case of tax / reflection tokens
             // where the amount bridged is less than the amount received by this router
             _value = balance;
         }
-        _distributeDelivery(_token, _value, _data);
+        _distributeDelivery(_token, _value, _data, messageIdentifier);
     }
 
     /**
@@ -233,7 +252,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * relayer a reason to finish a stranded delivery, so the strand cannot be
      * used to deny the service.
      */
-    function _distributeDelivery(address token, uint256 value, bytes memory data) internal {
+    function _distributeDelivery(address token, uint256 value, bytes memory data, bytes32 messageIdentifier) internal {
         if (data.length == 20) {
             // handling legacy wNative -> Native
             require(token == address(wNative));
@@ -248,11 +267,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (toNative) {
             wNative.withdraw(value);
         }
-        uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
+        uint256 runner = _runnerEarningTipFor(messageIdentifier);
         uint256 fees;
         uint256 toRecipient = value;
-        if (runner > 1) {
-            // a runner is attributed: it earns the fee for completing the delivery
+        if (runner != 0) {
+            // the entry is handling this very message: its runner earns the fee
             (fees, toRecipient) = _feeInfo(toNative, value, runner, feeDirector);
         }
         if (toRecipient > 0) {
@@ -345,8 +364,34 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // Same distribution as a fresh delivery: when this recovery came through
         // the single entry with a validator runner, that runner earns the tip;
         // a direct recover() or a non-validator leaves no runner, paying in full.
-        _distributeDelivery(localToken, value, data);
+        _distributeDelivery(localToken, value, data, messageIdentifier);
         emit DeliveryRecovered(messageIdentifier, localToken, recipient, value);
+    }
+
+    /**
+     * @dev The runner word (entry gas in the low 96 bits, runner address above)
+     * that earns the delivery tip on the payout of `messageIdentifier`, or zero
+     * when no one does. A runner earns the tip only when all three hold: the
+     * single entry has a runner attributed, the entry is handling this very
+     * message, and the identifier is known (not zero). A public {recover} call,
+     * or any payout of a different message that runs while the entry is busy,
+     * therefore pays no tip.
+     * @param messageIdentifier the identifier of the message being paid: the
+     * bridge's live identifier on a fresh delivery, the parsed identifier on a
+     * recovery
+     */
+    function _runnerEarningTipFor(bytes32 messageIdentifier) internal view returns (uint256) {
+        if (messageIdentifier == bytes32(0)) {
+            return 0;
+        }
+        if (StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value != messageIdentifier) {
+            return 0;
+        }
+        uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
+        if (runner <= _IDLE_RUNNER) {
+            return 0;
+        }
+        return runner;
     }
 
     /**
@@ -701,6 +746,26 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         payable
         nonReentrantUint256(RUNNER_SLOT, uint256(uint96(gasleft())) | (uint256(uint160(runner)) << 96))
     {
+        (bytes32 messageIdentifier,,) = _parseMessage(_data);
+        StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = messageIdentifier;
+        _dispatchEntryMessage(runner, messageIdentifier, _data, _signatures);
+        StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = _IDLE_ENTRY_MESSAGE;
+    }
+
+    /**
+     * @dev The body of the single entry, run while the entry holds the runner
+     * slot and records `messageIdentifier` as the message it is handling.
+     * @param runner the address the caller names to earn the tip
+     * @param messageIdentifier the identifier parsed from `_data`
+     * @param _data the signed message
+     * @param _signatures the validator signatures over the message
+     */
+    function _dispatchEntryMessage(
+        address runner,
+        bytes32 messageIdentifier,
+        bytes calldata _data,
+        bytes calldata _signatures
+    ) internal {
         // One entry for every situation. A caller (the delivery service, or
         // anyone) always calls this function with the signed message. The branch
         // decides what the message needs:
@@ -719,7 +784,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         //     into {onTokenBridged} with the runner attributed for the fee.
         IForeignArbitraryMessageBridge arbitraryMessageBridge =
             IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
-        (bytes32 messageIdentifier,,) = _parseMessage(_data);
         bool runnerIsValidator = IBridgeValidators(validatorsFilter).isValidator(runner);
         if (arbitraryMessageBridge.relayedMessages(messageIdentifier)) {
             // Recovery is permissionless, but the tip is earned only by a known
