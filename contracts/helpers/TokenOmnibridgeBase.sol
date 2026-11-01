@@ -49,9 +49,12 @@ interface IForeignArbitraryMessageBridge {
  * the message as delivered. Nothing a router can do inside {onTokenBridged}
  * makes the mediator report that failure, so the router cannot force the bridge
  * transaction to revert. The router therefore offers {recover}: anyone can
- * finish a stranded delivery afterwards by replaying the signed message. The
- * recipient receives the tokens with no delivery tip, because no one delivered
- * the message.
+ * finish a stranded delivery afterwards by replaying the signed message. When
+ * a known validator finishes it through {safeExecuteSignaturesWithAutoGasLimit},
+ * that validator earns the same delivery tip a fresh delivery pays, so a relayer
+ * has a reason to finish a strand. A direct {recover} call, or a caller who is
+ * not a validator, attributes no runner, and the recipient receives the value
+ * with no tip taken.
  */
 contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     using SafeERC20 for IERC20;
@@ -183,7 +186,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             return;
         }
         FeeDirector memory feeDirector = abi.decode(data, (FeeDirector));
-        // setting at the 0th slot from the right is a signal to unwrap the tokens
+        // bit 1 (the second bit from the right) is the signal to unwrap the tokens
         bool toNative = feeDirector.settings << 254 >> 255 == 1 && address(wNative) == token;
         // handling wNative -> Native
         if (toNative) {
@@ -206,8 +209,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Finishes a delivery that stranded in this router, by replaying the
-     * signed Arbitrary Message Bridge message. Pays the recipient the full
-     * value with no delivery tip, because no one delivered the message.
+     * signed Arbitrary Message Bridge message. A direct call attributes no
+     * runner, so the recipient receives the value with no delivery tip taken.
+     * (A validator that finishes the strand through
+     * {safeExecuteSignaturesWithAutoGasLimit} earns the tip instead.)
      *
      * The caller supplies the exact message bytes and the validator signatures,
      * the same pair the bridge accepted. This function trusts nothing the caller
@@ -343,16 +348,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     }
 
     /**
-     * @dev Records the message that is executing right now as processed, reading
-     * the identifier from this router's mediator's Arbitrary Message Bridge.
-     *
-     * The read is deliberately tolerant. A bridge that does not expose the
-     * identifier (only a test stand-in) returns empty data, which reads as zero
-     * and records nothing. The live bridge always sets the identifier before it
-     * calls the mediator, and the mediator reads it itself during the callback,
-     * so a real delivery always has a non-zero identifier to record.
-     */
-    /**
      * @dev Marks a message paid so it can never be paid again. The one place
      * `processed` is written: {onTokenBridged} feeds it the live identifier read
      * from the bridge, {_recover} feeds it the identifier parsed from the signed
@@ -365,6 +360,16 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         }
     }
 
+    /**
+     * @dev Reads the identifier of the message that is executing right now from
+     * this router's mediator's Arbitrary Message Bridge.
+     *
+     * The read is deliberately tolerant. A bridge that does not expose the
+     * identifier (only a test stand-in) returns empty data, which reads as zero,
+     * and {_markProcessed} then records nothing. The live bridge always sets the
+     * identifier before it calls the mediator, and the mediator reads it itself
+     * during the callback, so a real delivery always has a non-zero identifier.
+     */
     function _currentMessageId() internal view returns (bytes32) {
         (bool bridgeFound, bytes memory bridgeReturn) =
             address(bridge).staticcall(abi.encodeWithSelector(IBasicAMBMediator.bridgeContract.selector));
@@ -522,8 +527,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         //
         //   - If the bridge has already relayed this message, a first delivery
         //     ran. The bridge never relays a message twice, so the only reason
-        //     to be here again is that the first delivery stranded. Finish it
-        //     with no tip. {_recover} re-checks everything (signatures, the two
+        //     to be here again is that the first delivery stranded. Finish it,
+        //     paying the tip to the runner only when the runner is a known
+        //     validator. {_recover} re-checks everything (signatures, the two
         //     bridge flags, that it targeted this router, and that it has not
         //     been paid) and reverts a message that was already completed.
         //
