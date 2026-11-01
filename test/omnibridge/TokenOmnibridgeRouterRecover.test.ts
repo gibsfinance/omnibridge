@@ -663,4 +663,78 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(messageId)).to.equal(true)
         })
     })
+
+    // The first transfer of a token arrives as deployAndHandleBridgedTokensAndCall, whose layout is
+    // (token, name, symbol, decimals, recipient, value, data). The mediator deploys the bridged
+    // token, pairs it with the other chain's address, mints to the recipient, then calls back.
+    describe('recovery of a first-transfer (deploy) message', () => {
+        const erc20 = ['function balanceOf(address) view returns (uint256)']
+        const otherChainToken = ethers.getAddress('0x' + '5a'.repeat(20))
+
+        const deployCall = (data: string) =>
+            mediator.interface.encodeFunctionData('deployAndHandleBridgedTokensAndCall', [
+                otherChainToken,
+                'Other Token',
+                'OTH',
+                18,
+                router.target,
+                value,
+                data,
+            ])
+
+        /** Finds the smallest gas budget the mediator succeeds with; there the router callback starves. */
+        const strandAtSmallestSuccessfulBudget = async (messageId: string, innerCall: string) => {
+            let failing = 60_000n
+            let succeeding = 7_000_000n
+            while (succeeding - failing > 1_000n) {
+                const middle = (failing + succeeding) / 2n
+                const snapshot = await takeSnapshot()
+                await deliver(messageId, innerCall, middle)
+                const mediatorSucceeded = await amb.messageCallStatus(messageId)
+                await snapshot.restore()
+                if (mediatorSucceeded) succeeding = middle
+                if (!mediatorSucceeded) failing = middle
+            }
+            await deliver(messageId, innerCall, succeeding)
+        }
+
+        it('recovers the strand, paying the bridged token the mediator deployed', async () => {
+            const messageId = nextMessageId()
+            const innerCall = deployCall(feeDirector(user.address, 0n))
+            await strandAtSmallestSuccessfulBudget(messageId, innerCall)
+            expect(await amb.messageCallStatus(messageId)).to.equal(true)
+            const bridgedAddress: string = await mediator.bridgedTokenAddress(otherChainToken)
+            expect(bridgedAddress).to.not.equal(ethers.ZeroAddress)
+            const bridged = new ethers.Contract(bridgedAddress, erc20, hre.ethers.provider)
+            expect(await bridged.balanceOf(router), 'the delivery stranded in the router').to.equal(value)
+            expect(await bridged.balanceOf(user)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(false)
+
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            await expect(router.connect(stranger).recover(message, signatures))
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(messageId, bridgedAddress, router.target, value)
+            expect(await bridged.balanceOf(user)).to.equal(value)
+            expect(await bridged.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+
+        it('rejects a deploy message whose recipient is not this router', async () => {
+            const messageId = nextMessageId()
+            const innerCall = mediator.interface.encodeFunctionData('deployAndHandleBridgedTokensAndCall', [
+                otherChainToken,
+                'Other Token',
+                'OTH',
+                18,
+                stranger.address,
+                value,
+                feeDirector(user.address, 0n),
+            ])
+            await deliver(messageId, innerCall, 7_000_000n)
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'NotForThisRouter')
+        })
+    })
 })

@@ -133,12 +133,16 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     event DeliveryRecovered(bytes32 indexed messageId, address indexed token, address indexed recipient, uint256 value);
 
     /**
-     * @dev The selectors of the two mediator callbacks that deliver to a
-     * receiver and carry extra data. Both share the same argument layout
-     * (token, recipient, value, data), so {recover} decodes them the same way.
+     * @dev The selectors of the three mediator callbacks that deliver to a
+     * receiver and carry extra data. The two handle callbacks share the layout
+     * (token, recipient, value, data). The first transfer of a token arrives as
+     * the deploy callback instead, with the layout (token, name, symbol,
+     * decimals, recipient, value, data).
      */
     bytes4 private constant HANDLE_BRIDGED_SELECTOR = bytes4(keccak256("handleBridgedTokensAndCall(address,address,uint256,bytes)"));
     bytes4 private constant HANDLE_NATIVE_SELECTOR = bytes4(keccak256("handleNativeTokensAndCall(address,address,uint256,bytes)"));
+    bytes4 private constant DEPLOY_AND_HANDLE_BRIDGED_SELECTOR =
+        bytes4(keccak256("deployAndHandleBridgedTokensAndCall(address,string,string,uint8,address,uint256,bytes)"));
 
     bytes32 public constant RUNNER_SLOT = keccak256(abi.encode("omnibridgerouter.runner"));
 
@@ -486,7 +490,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Decodes the mediator callback embedded in a message. Accepts only the
-     * two "and call" selectors that carry a fee director, which is exactly the
+     * three "and call" selectors that carry a fee director, which is exactly the
      * shape this router delivers; anything else is rejected. Returns the LOCAL
      * token the mediator sent this router (see {_localToken}), never the raw
      * token address from the message.
@@ -519,7 +523,27 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (innerCall.length < 4) revert MalformedMessage();
         selector = bytes4(innerCall[0:4]);
         if (!_isSupportedHandleSelector(selector)) revert UnsupportedSelector();
+        if (selector == DEPLOY_AND_HANDLE_BRIDGED_SELECTOR) {
+            (messageToken, recipient, value, data) = _decodeDeployCallFields(innerCall[4:]);
+            return (selector, messageToken, recipient, value, data);
+        }
         (messageToken, recipient, value, data) = abi.decode(innerCall[4:], (address, address, uint256, bytes));
+    }
+
+    /**
+     * @dev Decodes the arguments of deployAndHandleBridgedTokensAndCall
+     * (token, name, symbol, decimals, recipient, value, data) and keeps the four
+     * that delivery needs. The name, symbol and decimals only matter to the
+     * mediator when it deploys the bridged token.
+     * @param arguments the callback's abi-encoded arguments, without the selector
+     */
+    function _decodeDeployCallFields(bytes calldata arguments)
+        internal
+        pure
+        returns (address messageToken, address recipient, uint256 value, bytes memory data)
+    {
+        (messageToken,,,, recipient, value, data) =
+            abi.decode(arguments, (address, string, string, uint8, address, uint256, bytes));
     }
 
     /**
@@ -527,7 +551,8 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * delivers and can recover.
      */
     function _isSupportedHandleSelector(bytes4 selector) internal pure returns (bool) {
-        return selector == HANDLE_BRIDGED_SELECTOR || selector == HANDLE_NATIVE_SELECTOR;
+        return selector == HANDLE_BRIDGED_SELECTOR || selector == HANDLE_NATIVE_SELECTOR
+            || selector == DEPLOY_AND_HANDLE_BRIDGED_SELECTOR;
     }
 
     /**
@@ -552,9 +577,12 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * (BasicOmnibridge.handleNativeTokensAndCall), so the message token is the
      * local token.
      *
-     * The bridged-token callbacks name the token's address on the OTHER chain.
-     * The mediator converts it with bridgedTokenAddress before it mints
-     * (BasicOmnibridge.handleBridgedTokensAndCall). An address on the other chain
+     * The bridged-token callbacks (handleBridgedTokensAndCall and the
+     * first-transfer deployAndHandleBridgedTokensAndCall) name the token's
+     * address on the OTHER chain. The mediator converts it with
+     * bridgedTokenAddress before it mints (BasicOmnibridge's
+     * handleBridgedTokensAndCall, and _getBridgedTokenOrDeploy, which pairs a
+     * newly deployed token first). An address on the other chain
      * can equal a real token's address here (PulseChain copied Ethereum's state),
      * so paying the message token would pay a different, real token out of other
      * users' funds. The pairing is set once and never cleared, so the lookup
