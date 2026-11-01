@@ -99,6 +99,17 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param messageToken the token address the message names, on the other chain
      */
     error UnknownBridgedToken(address messageToken);
+    /**
+     * @dev The router holds less of the token than the message being recovered
+     * is owed. The router keeps every user's strands of a token in one balance,
+     * so paying less would either short this recipient for good (the message is
+     * closed once paid) or, for a later message, pay it out of someone else's
+     * strand. Recovery waits instead; the message stays claimable.
+     * @param token the local token the message is owed in
+     * @param balance what the router holds of that token
+     * @param value what the message is owed
+     */
+    error InsufficientBalanceForRecovery(address token, uint256 balance, uint256 value);
 
     /**
      * @dev Emitted when {recover} finishes a stranded delivery.
@@ -108,7 +119,8 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * token and not the other chain's address that the message names
      * @param recipient the recipient the message names, which recovery requires to
      * be this router (the end recipient is inside the fee director data)
-     * @param value the amount paid, after the fee-on-transfer balance clamp
+     * @param value the full value the message names, split between the end
+     * recipient and any delivery tip
      */
     event DeliveryRecovered(bytes32 indexed messageId, address indexed token, address indexed recipient, uint256 value);
 
@@ -282,13 +294,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         (address localToken, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
         if (recipient != address(this)) revert NotForThisRouter();
 
-        _markProcessed(messageIdentifier);
-
+        // Never pay less than the message is owed. The balance is shared by every
+        // strand of this token, so a short balance means paying in part would close
+        // this message for good, and the money that is there belongs to others.
         uint256 balance = IERC20(localToken).balanceOf(address(this));
-        if (balance < value) {
-            // same fee-on-transfer clamp the delivery path applies
-            value = balance;
-        }
+        if (balance < value) revert InsufficientBalanceForRecovery(localToken, balance, value);
+
+        _markProcessed(messageIdentifier);
         // Same distribution as a fresh delivery: when this recovery came through
         // the single entry with a validator runner, that runner earns the tip;
         // a direct recover() or a non-validator leaves no runner, paying in full.

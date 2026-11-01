@@ -525,4 +525,61 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await token.balanceOf(router)).to.equal(value)
         })
     })
+
+    // The router holds every user's strands of a token in one balance. Recovery must never pay one
+    // message out of another's funds by quietly paying less, and must never close a message it
+    // could not pay in full.
+    describe('recovery from a shared balance', () => {
+        /**
+         * Puts `arrived` of the wrapped token in the router for a message that says `messageValue`, and
+         * marks the message relayed and delivered. This is a strand whose token arrived short, as a
+         * fee-on-transfer token does.
+         */
+        const strandThatArrived = async (arrived: bigint, messageValue: bigint, recipient: string) => {
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ amount: messageValue, data: feeDirector(recipient, 0n) })
+            await token.deposit({ value: arrived })
+            await token.transfer(router, arrived)
+            await amb.executeMessageCall(token, router, token.interface.encodeFunctionData('deposit'), messageId, 100_000n)
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            return { messageId, message, signatures: await sign(message, [validators[0], validators[1]]) }
+        }
+
+        it('two strands of one token: a short balance reverts and leaves the message claimable', async () => {
+            const firstRecipient = signers[7]
+            const secondRecipient = signers[8]
+            const shortfall = value / 4n
+            const first = await strandThatArrived(value, value, firstRecipient.address)
+            const second = await strandThatArrived(value - shortfall, value, secondRecipient.address)
+            expect(await token.balanceOf(router)).to.equal(2n * value - shortfall)
+
+            await router.recover(first.message, first.signatures)
+            expect(await token.balanceOf(firstRecipient)).to.equal(value)
+            expect(await token.balanceOf(router)).to.equal(value - shortfall)
+
+            // the second message is owed `value` but only `value - shortfall` is left
+            await expect(router.recover(second.message, second.signatures))
+                .to.be.revertedWithCustomError(router, 'InsufficientBalanceForRecovery')
+                .withArgs(token.target, value - shortfall, value)
+            expect(await token.balanceOf(secondRecipient)).to.equal(0n)
+            expect(await router.processed(second.messageId)).to.equal(false)
+
+            // once the balance covers it, the same message recovers in full
+            await token.deposit({ value: shortfall })
+            await token.transfer(router, shortfall)
+            await router.recover(second.message, second.signatures)
+            expect(await token.balanceOf(secondRecipient)).to.equal(value)
+            expect(await token.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(second.messageId)).to.equal(true)
+        })
+
+        it('an empty balance reverts instead of paying nothing and closing the message', async () => {
+            const recipient = signers[7]
+            const empty = await strandThatArrived(0n, value, recipient.address)
+            await expect(router.recover(empty.message, empty.signatures))
+                .to.be.revertedWithCustomError(router, 'InsufficientBalanceForRecovery')
+                .withArgs(token.target, 0n, value)
+            expect(await router.processed(empty.messageId)).to.equal(false)
+        })
+    })
 })
