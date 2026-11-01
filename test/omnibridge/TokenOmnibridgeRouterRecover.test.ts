@@ -582,4 +582,55 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(empty.messageId)).to.equal(false)
         })
     })
+
+    // The single delivery entry holds the runner slot, not the reentrancy guard that recover() holds.
+    // A payout recipient that re-enters recover() for ANOTHER strand would then run that recovery
+    // with the outer runner still attributed, and pay the outer runner a tip it did not earn.
+    describe('re-entry during a recovery through the single delivery entry', () => {
+        it('a recipient cannot re-enter recover() and tip the outer runner from another strand', async () => {
+            const runner = signers[4]
+            const secondRecipient = signers[8]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const hookToken = await (await hre.ethers.getContractFactory('MockTransferHookToken')).deploy()
+            const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
+            const tip = value / 10n
+
+            /** Strands `value` of the hook token for a fixed-tip delivery to `recipient`. */
+            const strandHookToken = async (recipient: string) => {
+                const messageId = nextMessageId()
+                const innerCall = ethers.concat([
+                    mediator.interface.getFunction('handleNativeTokensAndCall')!.selector,
+                    coder.encode(['address', 'address', 'uint256', 'bytes'], [hookToken.target, router.target, value, feeDirector(recipient, 0b0001n, tip)]),
+                ])
+                await hookToken.mint(router, value)
+                await amb.executeMessageCall(token, router, token.interface.encodeFunctionData('deposit'), messageId, 100_000n)
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                return { messageId, message, signatures: await sign(message, [validators[0], validators[1]]) }
+            }
+
+            const outer = await strandHookToken(await recoverer.getAddress())
+            const inner = await strandHookToken(secondRecipient.address)
+            await recoverer.arm(router, inner.message, inner.signatures)
+
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, outer.message, outer.signatures)
+
+            // the outer message paid as it should
+            expect(await hookToken.balanceOf(recoverer)).to.equal(value - tip)
+            expect(await router.processed(outer.messageId)).to.equal(true)
+            // the re-entrant recovery was attempted and refused by the reentrancy guard
+            expect(await recoverer.reentrantCallMade()).to.equal(true)
+            expect(await recoverer.reentrantCallSucceeded()).to.equal(false)
+            expect(await recoverer.reentrantCallRevertData()).to.equal(router.interface.getError('ReentrancyGuard')!.selector)
+            // so the runner earned exactly one tip, and the other strand is untouched
+            expect(await hookToken.balanceOf(runner)).to.equal(tip)
+            expect(await hookToken.balanceOf(secondRecipient)).to.equal(0n)
+            expect(await router.processed(inner.messageId)).to.equal(false)
+            expect(await hookToken.balanceOf(router)).to.equal(value)
+
+            // the other strand still recovers on its own, with no tip because no runner is attributed
+            await router.recover(inner.message, inner.signatures)
+            expect(await hookToken.balanceOf(secondRecipient)).to.equal(value)
+            expect(await hookToken.balanceOf(runner)).to.equal(tip)
+        })
+    })
 })

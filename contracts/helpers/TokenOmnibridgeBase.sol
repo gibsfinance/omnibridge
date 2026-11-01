@@ -257,17 +257,31 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param message the Arbitrary Message Bridge message, exactly as signed
      * @param signatures the validator signatures over that message
      */
-    function recover(bytes calldata message, bytes calldata signatures) external nonReentrant {
+    function recover(bytes calldata message, bytes calldata signatures) external {
+        _recoverWithReentrancyGuard(message, signatures);
+    }
+
+    /**
+     * @dev Runs {_recover} while holding the reentrancy guard that
+     * {onTokenBridged} also holds. Both recovery paths go through here: the
+     * public {recover} and the recovery branch of the single delivery entry.
+     * The entry's own guard is the runner slot, not this one, so without this a
+     * payout recipient could re-enter {recover} (or make the bridge deliver to
+     * {onTokenBridged}) while the outer runner is still attributed, and that
+     * unrelated payout would pay the outer runner a tip.
+     */
+    function _recoverWithReentrancyGuard(bytes calldata message, bytes calldata signatures) internal nonReentrant {
         _recover(message, signatures);
     }
 
     /**
-     * @dev The recovery body, shared by the public {recover} and by the single
-     * delivery entry {safeExecuteSignaturesWithAutoGasLimit}. It follows
+     * @dev The recovery body, shared (through {_recoverWithReentrancyGuard}) by
+     * the public {recover} and by the single delivery entry
+     * {safeExecuteSignaturesWithAutoGasLimit}. It follows
      * checks-effects-interactions: it records the message as processed before it
      * moves any tokens, so a re-entrant call for the same message finds it
-     * already processed. It takes no reentrancy modifier of its own; both
-     * callers hold one.
+     * already processed. It takes no reentrancy modifier of its own; its one
+     * caller, {_recoverWithReentrancyGuard}, holds it.
      */
     function _recover(bytes calldata message, bytes calldata signatures) internal {
         (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(message);
@@ -611,7 +625,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             if (!runnerIsValidator) {
                 StorageSlot.getUint256Slot(RUNNER_SLOT).value = _IDLE_RUNNER;
             }
-            _recover(_data, _signatures);
+            _recoverWithReentrancyGuard(_data, _signatures);
             return;
         }
         if (!runnerIsValidator) {
