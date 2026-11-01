@@ -150,14 +150,17 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             expect(await token.balanceOf(runner)).to.equal(runnerWrappedBefore)
         })
 
-        it('reverts AlreadyProcessed on a second call with the same message', async () => {
+        it('a second call with the same message returns AlreadyHandled and pays nothing', async () => {
             const { message } = await makeStrand()
             const signatures = await sign(message, [validators[0], validators[1]])
             await router.safeExecuteSignaturesWithAutoGasLimit(stranger, message, signatures)
-            await expect(router.safeExecuteSignaturesWithAutoGasLimit(stranger, message, signatures)).to.be.revertedWithCustomError(
+            const recipientAfter = await hre.ethers.provider.getBalance(stranger)
+            expect(await router.connect(user).safeExecuteSignaturesWithAutoGasLimit.staticCall(stranger, message, signatures)).to.equal(2n)
+            await expect(router.connect(user).safeExecuteSignaturesWithAutoGasLimit(stranger, message, signatures)).to.not.emit(
                 router,
-                'AlreadyProcessed',
+                'DeliveryRecovered',
             )
+            expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientAfter)
         })
 
         it('does not reach recovery without validator signatures', async () => {

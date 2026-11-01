@@ -95,7 +95,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     error WrongExecutor();
     error MessageNotRelayed();
     error MessageNotDelivered();
-    error AlreadyProcessed();
     error NotForThisRouter();
     error MalformedMessage();
     error UnsupportedSelector();
@@ -128,6 +127,20 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param messageId the Arbitrary Message Bridge message identifier
      */
     error DeliveryNotCompleted(bytes32 messageId);
+
+    /**
+     * @dev What a call to the single entry or to {recover} did. A relayer that
+     * simulates its call first reads this to learn whether it would win.
+     * @custom:value Delivered the entry relayed a fresh message through the bridge
+     * @custom:value Recovered the message had stranded in this router and was paid now
+     * @custom:value AlreadyHandled this router had already paid the message (another
+     * caller won the race); the call returned at once and changed nothing
+     */
+    enum DeliveryOutcome {
+        Delivered,
+        Recovered,
+        AlreadyHandled
+    }
 
     /**
      * @dev Emitted when {recover} finishes a stranded delivery.
@@ -320,11 +333,32 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * has not already been paid. Only then does it pay, and it records the
      * identifier first so the same message cannot be paid twice.
      *
+     * A message this router has already paid is not an error: the call returns
+     * {DeliveryOutcome.AlreadyHandled} before any storage write or external
+     * call, so a caller who lost a race to the same message spends as little
+     * gas as possible. Every genuine fault still reverts.
+     *
      * @param message the Arbitrary Message Bridge message, exactly as signed
      * @param signatures the validator signatures over that message
+     * @return outcome {DeliveryOutcome.Recovered} when this call paid the
+     * message, {DeliveryOutcome.AlreadyHandled} when it was already paid
      */
-    function recover(bytes calldata message, bytes calldata signatures) external {
-        _recoverWithReentrancyGuard(message, signatures);
+    function recover(bytes calldata message, bytes calldata signatures) external returns (DeliveryOutcome outcome) {
+        if (_isAlreadyProcessed(message)) {
+            return DeliveryOutcome.AlreadyHandled;
+        }
+        return _recoverWithReentrancyGuard(message, signatures);
+    }
+
+    /**
+     * @dev Whether this router has already paid the message: one parse and
+     * one storage read, no external call and no write. Both public entry
+     * points run it first, so a caller who lost a race returns at once.
+     * @param message the Arbitrary Message Bridge message, exactly as signed
+     */
+    function _isAlreadyProcessed(bytes calldata message) internal view returns (bool) {
+        (bytes32 messageIdentifier,,) = _parseMessage(message);
+        return processed[messageIdentifier];
     }
 
     /**
@@ -337,8 +371,12 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * itself is bound to the message (see {_runnerEarningTipFor}), so a payout
      * of another message would pay no tip even without this guard.
      */
-    function _recoverWithReentrancyGuard(bytes calldata message, bytes calldata signatures) internal nonReentrant {
-        _recover(message, signatures);
+    function _recoverWithReentrancyGuard(bytes calldata message, bytes calldata signatures)
+        internal
+        nonReentrant
+        returns (DeliveryOutcome outcome)
+    {
+        return _recover(message, signatures);
     }
 
     /**
@@ -349,19 +387,45 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * moves any tokens, so a re-entrant call for the same message finds it
      * already processed. It takes no reentrancy modifier of its own; its one
      * caller, {_recoverWithReentrancyGuard}, holds it.
+     *
+     * The cheap checks run first, so a caller who loses a race or sends a
+     * message that cannot be recovered spends little gas: parse, executor,
+     * processed, the two bridge flags, then the recipient (decoded without any
+     * external call). None of them can lead to a payment, only to an exit.
+     * The validator signatures come next and gate everything that pays.
      */
-    function _recover(bytes calldata message, bytes calldata signatures) internal {
+    function _recover(bytes calldata message, bytes calldata signatures) internal returns (DeliveryOutcome outcome) {
         (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(message);
         // The message must have run through this router's own mediator. The
         // mediator is the only caller {onTokenBridged} accepts, so any message
         // for another mediator or an ordinary transfer cannot be recovered here.
         if (executor != bridge) revert WrongExecutor();
+        // Losing a race is not an error: nothing is written and nothing is paid.
+        if (processed[messageIdentifier]) return DeliveryOutcome.AlreadyHandled;
 
+        address validatorContract = _requireStrandedInThisRouter(messageIdentifier, innerCall);
+        // Everything above can only exit. From here on the call can pay, so the
+        // validator signatures must hold first.
+        _verifySignatures(validatorContract, message, signatures);
+        _payRecoveredMessage(messageIdentifier, innerCall);
+        return DeliveryOutcome.Recovered;
+    }
+
+    /**
+     * @dev The cheap recovery checks that need the bridge but no signatures.
+     * Reverts unless the bridge relayed the message, the mediator call
+     * succeeded, and the message's recipient is this router. Pays nothing.
+     * @param messageIdentifier the identifier parsed from the message
+     * @param innerCall the mediator callback the message carries
+     * @return validatorContract the bridge's validator set, for the signature check
+     */
+    function _requireStrandedInThisRouter(bytes32 messageIdentifier, bytes calldata innerCall)
+        internal
+        view
+        returns (address validatorContract)
+    {
         IForeignArbitraryMessageBridge arbitraryMessageBridge =
             IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
-
-        _verifySignatures(arbitraryMessageBridge.validatorContract(), message, signatures);
-
         // relayedMessages is set before the recipient call, so it alone does not
         // prove the tokens arrived. messageCallStatus is the mediator's own call
         // result: true for a stranded delivery (the mediator swallows the failed
@@ -370,10 +434,19 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // admit only a message whose tokens really reached this router.
         if (!arbitraryMessageBridge.relayedMessages(messageIdentifier)) revert MessageNotRelayed();
         if (!arbitraryMessageBridge.messageCallStatus(messageIdentifier)) revert MessageNotDelivered();
-        if (processed[messageIdentifier]) revert AlreadyProcessed();
-
-        (address localToken, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
+        (,, address recipient,,) = _decodeHandleCallFields(innerCall);
         if (recipient != address(this)) revert NotForThisRouter();
+        return arbitraryMessageBridge.validatorContract();
+    }
+
+    /**
+     * @dev Pays a recovered message, once every check has passed. Records the
+     * message as processed before it moves any tokens.
+     * @param messageIdentifier the identifier parsed from the message
+     * @param innerCall the mediator callback the message carries
+     */
+    function _payRecoveredMessage(bytes32 messageIdentifier, bytes calldata innerCall) internal {
+        (address localToken, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
 
         // Never pay less than the message is owed. The balance is shared by every
         // strand of this token, so a short balance means paying in part would close
@@ -770,11 +843,39 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     function safeExecuteSignaturesWithAutoGasLimit(address runner, bytes calldata _data, bytes calldata _signatures)
         external
         payable
-        nonReentrantUint256(RUNNER_SLOT, uint256(uint96(gasleft())) | (uint256(uint160(runner)) << 96))
+        returns (DeliveryOutcome outcome)
+    {
+        // Read first, so the gas-mode tip measures from the same point as before
+        // the cheap check below was added.
+        uint256 entryGas = gasleft();
+        // A caller who lost the race to this message returns here, before the
+        // runner slot write or any external call.
+        if (_isAlreadyProcessed(_data)) {
+            return DeliveryOutcome.AlreadyHandled;
+        }
+        return _runAttributedEntry(runner, entryGas, _data, _signatures);
+    }
+
+    /**
+     * @dev Holds the runner slot (`entryGas` in the low 96 bits, the runner
+     * above) and records the message identifier as the
+     * message the entry is handling, for the length of the dispatch. Both go
+     * back to their idle values afterwards.
+     * @param runner the address the caller names to earn the tip
+     * @param entryGas the gas left when the entry started, which the gas-mode
+     * tip measures from
+     * @param _data the signed message
+     * @param _signatures the validator signatures over the message
+     * @return outcome what the dispatch did
+     */
+    function _runAttributedEntry(address runner, uint256 entryGas, bytes calldata _data, bytes calldata _signatures)
+        internal
+        nonReentrantUint256(RUNNER_SLOT, uint256(uint96(entryGas)) | (uint256(uint160(runner)) << 96))
+        returns (DeliveryOutcome outcome)
     {
         (bytes32 messageIdentifier,,) = _parseMessage(_data);
         StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = messageIdentifier;
-        _dispatchEntryMessage(runner, messageIdentifier, _data, _signatures);
+        outcome = _dispatchEntryMessage(runner, messageIdentifier, _data, _signatures);
         StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = _IDLE_ENTRY_MESSAGE;
     }
 
@@ -785,13 +886,15 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param messageIdentifier the identifier parsed from `_data`
      * @param _data the signed message
      * @param _signatures the validator signatures over the message
+     * @return outcome {DeliveryOutcome.Delivered} for a fresh relay, otherwise
+     * what the recovery returned
      */
     function _dispatchEntryMessage(
         address runner,
         bytes32 messageIdentifier,
         bytes calldata _data,
         bytes calldata _signatures
-    ) internal {
+    ) internal returns (DeliveryOutcome outcome) {
         // One entry for every situation. A caller (the delivery service, or
         // anyone) always calls this function with the signed message. The branch
         // decides what the message needs:
@@ -821,8 +924,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             if (!runnerIsValidator) {
                 StorageSlot.getUint256Slot(RUNNER_SLOT).value = _IDLE_RUNNER;
             }
-            _recoverWithReentrancyGuard(_data, _signatures);
-            return;
+            return _recoverWithReentrancyGuard(_data, _signatures);
         }
         if (!runnerIsValidator) {
             revert RunnerNotValidator(runner);
@@ -831,6 +933,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (_messageDeliversToThisRouter(_data) && !processed[messageIdentifier]) {
             revert DeliveryNotCompleted(messageIdentifier);
         }
+        return DeliveryOutcome.Delivered;
     }
     /**
      * updates the filter to any contract.

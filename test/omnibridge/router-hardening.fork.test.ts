@@ -812,22 +812,15 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     expect(await token.balanceOf(router), 'router keeps nothing').to.equal(0n)
                     expect(await hre.ethers.provider.getBalance(router), 'router keeps no native coin').to.equal(0n)
                     expect(await router.processed(messageId)).to.equal(true)
-                    // A second recover must fail with the specific error. Both a dry run and a mined attempt are checked:
-                    // the mined attempt must record a failed status and change no balance.
-                    const dryRunError = await router.recover.staticCall(message, signatures).then(
-                        () => 'did not revert',
-                        (error: any) => router.interface.parseError(error.data)?.name ?? `unparsed: ${error.message}`,
-                    )
-                    expect(dryRunError, 'second recover is refused with AlreadyProcessed').to.equal('AlreadyProcessed')
-                    const second = await (async () => {
-                        try {
-                            return (await (await router.recover(message, signatures, { gasLimit: 1_000_000n })).wait()).status
-                        } catch {
-                            // ethers throws when the mined receipt carries a failed status
-                            return 0
-                        }
-                    })()
-                    expect(second, 'the mined second recover failed').to.equal(0)
+                    // A second recover is a lost race: it returns AlreadyHandled (enum value 2) and pays nothing.
+                    // Both a dry run and a mined attempt are checked: the mined attempt succeeds, emits nothing,
+                    // and changes no balance.
+                    const dryRunOutcome = await router.recover.staticCall(message, signatures)
+                    expect(dryRunOutcome, 'second recover returns AlreadyHandled').to.equal(2n)
+                    const second = await (await router.recover(message, signatures, { gasLimit: 1_000_000n })).wait()
+                    expect(second.status, 'the mined second recover succeeds').to.equal(1)
+                    expect(second.logs.length, 'the mined second recover emits nothing').to.equal(0)
+                    expect((await token.balanceOf(recipient)) - tokenBefore).to.equal(tokenGain)
                     expect((await hre.ethers.provider.getBalance(recipient)) - nativeBefore).to.equal(nativeGain)
                 })
             })

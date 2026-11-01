@@ -10,6 +10,8 @@ const oneEther = ethers.parseEther('1')
 const value = oneEther / 10n
 const unwrapFlag = 0b0010n
 const coder = ethers.AbiCoder.defaultAbiCoder()
+/** The router's DeliveryOutcome enum, in declaration order. */
+const Outcome = { Delivered: 0n, Recovered: 1n, AlreadyHandled: 2n } as const
 
 /**
  * Packs signatures in the bridge blob layout: one count byte, the v bytes, the r words, the s words.
@@ -211,14 +213,18 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(messageId)).to.equal(true)
         })
 
-        it('reverts AlreadyProcessed on a second recover of the same message', async () => {
+        it('a second recover of the same message returns AlreadyHandled and pays nothing', async () => {
             const { message } = await makeStrand()
             const signatures = await sign(message, [validators[0], validators[1]])
+            expect(await router.recover.staticCall(message, signatures)).to.equal(Outcome.Recovered)
             await router.recover(message, signatures)
-            await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'AlreadyProcessed')
+            const recipientBefore = await hre.ethers.provider.getBalance(stranger)
+            expect(await router.recover.staticCall(message, signatures)).to.equal(Outcome.AlreadyHandled)
+            await expect(router.recover(message, signatures)).to.not.emit(router, 'DeliveryRecovered')
+            expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientBefore)
         })
 
-        it('reverts AlreadyProcessed on a message the normal path already delivered', async () => {
+        it('returns AlreadyHandled on a message the normal path already delivered, paying nothing more', async () => {
             const messageId = nextMessageId()
             const innerCall = handleCall({ data: unwrapData() })
             const before = await hre.ethers.provider.getBalance(stranger)
@@ -228,7 +234,10 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(messageId)).to.equal(true)
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
             const signatures = await sign(message, [validators[0], validators[1]])
-            await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'AlreadyProcessed')
+            const recipientAfterDelivery = await hre.ethers.provider.getBalance(stranger)
+            expect(await router.recover.staticCall(message, signatures)).to.equal(Outcome.AlreadyHandled)
+            await expect(router.recover(message, signatures)).to.not.emit(router, 'DeliveryRecovered')
+            expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientAfterDelivery)
         })
 
         describe('rejections', () => {
@@ -345,16 +354,13 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await token.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
 
-            // 4) the same message a third time pays nothing: the entry hits AlreadyProcessed and reverts.
+            // 4) the same message a third time pays nothing: the entry returns AlreadyHandled.
             const recipientAfter = await hre.ethers.provider.getBalance(stranger)
-            let reverted = false
-            try {
-                await router.connect(user).safeExecuteSignaturesWithAutoGasLimit.staticCall(user.address, message, signatures)
-            } catch {
-                reverted = true
-            }
-            expect(reverted).to.equal(true)
+            const outcome = await router.connect(user).safeExecuteSignaturesWithAutoGasLimit.staticCall(user.address, message, signatures)
+            expect(outcome).to.equal(Outcome.AlreadyHandled)
+            await (await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(user.address, message, signatures)).wait()
             expect(await hre.ethers.provider.getBalance(stranger)).to.equal(recipientAfter) // no double payment
+            expect(await token.balanceOf(router)).to.equal(0n)
         })
 
         it('sufficient gas on the first delivery pays the recipient directly, no recovery needed', async () => {
@@ -669,6 +675,61 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect((await token.balanceOf(victim)) - victimBefore, 'the victim is paid in full').to.equal(value)
             expect((await token.balanceOf(runner)) - runnerBefore, 'the runner earns nothing from that payout').to.equal(0n)
             expect(await token.balanceOf(router)).to.equal(0n)
+        })
+    })
+
+    // Several relayers race the same message. The losers must spend as little gas as possible: the
+    // router reads processed[id] before any write, external call or signature check, and returns
+    // AlreadyHandled instead of reverting.
+    describe('losing a race to the same message', () => {
+        /**
+         * The most gas, transaction base cost and calldata included, a losing call may use. The
+         * signature-first order spent far more (two ecrecovers and several external calls before
+         * the processed check), so this bound fails if the cheap check moves back behind them.
+         */
+        const LOSING_CALL_GAS_CEILING = 45_000n
+
+        const recoveredStrand = async (winner: 'entry' | 'recover') => {
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: feeDirector(stranger.address, unwrapFlag) })
+            await strand(messageId, innerCall)
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            if (winner === 'entry') await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(user.address, message, signatures)
+            if (winner === 'recover') await router.connect(user).recover(message, signatures)
+            expect(await router.processed(messageId)).to.equal(true)
+            return { messageId, message, signatures }
+        }
+
+        it('the entry: a loser gets AlreadyHandled, writes nothing, pays nothing, and spends little gas', async () => {
+            const { message, signatures } = await recoveredStrand('entry')
+            const loser = signers[9]
+            const runnerSlot = await router.RUNNER_SLOT()
+            const slotBefore = await hre.ethers.provider.getStorage(router, runnerSlot)
+            const recipientBefore = await hre.ethers.provider.getBalance(stranger)
+            expect(await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit.staticCall(loser.address, message, signatures)).to.equal(
+                Outcome.AlreadyHandled,
+            )
+            const receipt = await (await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit(loser.address, message, signatures)).wait()
+            console.log(`      losing entry call used ${receipt.gasUsed} gas`)
+            expect(receipt.status).to.equal(1)
+            expect(receipt.logs.length, 'no event of any kind').to.equal(0)
+            expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_GAS_CEILING)
+            expect(await hre.ethers.provider.getStorage(router, runnerSlot)).to.equal(slotBefore)
+            expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientBefore)
+        })
+
+        it('recover(): a loser gets AlreadyHandled, pays nothing, and spends little gas', async () => {
+            const { message, signatures } = await recoveredStrand('recover')
+            const loser = signers[9]
+            const recipientBefore = await hre.ethers.provider.getBalance(stranger)
+            expect(await router.connect(loser).recover.staticCall(message, signatures)).to.equal(Outcome.AlreadyHandled)
+            const receipt = await (await router.connect(loser).recover(message, signatures)).wait()
+            console.log(`      losing recover call used ${receipt.gasUsed} gas`)
+            expect(receipt.status).to.equal(1)
+            expect(receipt.logs.length, 'no event of any kind').to.equal(0)
+            expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_GAS_CEILING)
+            expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientBefore)
         })
     })
 
