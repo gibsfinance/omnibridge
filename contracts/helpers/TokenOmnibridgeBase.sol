@@ -109,17 +109,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      */
     error UnknownBridgedToken(address messageToken);
     /**
-     * @dev The router holds less of the token than the message being recovered
-     * is owed. The router keeps every user's strands of a token in one balance,
-     * so paying less would either short this recipient for good (the message is
-     * closed once paid) or, for a later message, pay it out of someone else's
-     * strand. Recovery waits instead; the message stays claimable.
-     * @param token the local token the message is owed in
-     * @param balance what the router holds of that token
-     * @param value what the message is owed
-     */
-    error InsufficientBalanceForRecovery(address token, uint256 balance, uint256 value);
-    /**
      * @dev A fresh delivery to this router through the single entry returned
      * from the bridge without this router recording the message as paid: the
      * mediator swallowed a failed {onTokenBridged}. Reverting keeps the tokens
@@ -150,8 +139,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * token and not the other chain's address that the message names
      * @param recipient the recipient the message names, which recovery requires to
      * be this router (the end recipient is inside the fee director data)
-     * @param value the full value the message names, split between the end
-     * recipient and any delivery tip
+     * @param value the amount paid out, split between the end recipient and
+     * any delivery tip: the value the message names, capped at what the router
+     * held of the token (see {_payableAmount})
      */
     event DeliveryRecovered(bytes32 indexed messageId, address indexed token, address indexed recipient, uint256 value);
 
@@ -260,13 +250,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // that later reverts unwinds this write along with everything else.
         bytes32 messageIdentifier = _currentMessageId();
         _markProcessed(messageIdentifier);
-        uint256 balance = IERC20(_token).balanceOf(address(this));
-        if (balance < _value) {
-            // this covers the case of tax / reflection tokens
-            // where the amount bridged is less than the amount received by this router
-            _value = balance;
-        }
-        _distributeDelivery(_token, _value, _data, messageIdentifier);
+        _distributeDelivery(_token, _payableAmount(_token, _value), _data, messageIdentifier);
     }
 
     /**
@@ -446,13 +430,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param innerCall the mediator callback the message carries
      */
     function _payRecoveredMessage(bytes32 messageIdentifier, bytes calldata innerCall) internal {
-        (address localToken, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
-
-        // Never pay less than the message is owed. The balance is shared by every
-        // strand of this token, so a short balance means paying in part would close
-        // this message for good, and the money that is there belongs to others.
-        uint256 balance = IERC20(localToken).balanceOf(address(this));
-        if (balance < value) revert InsufficientBalanceForRecovery(localToken, balance, value);
+        (address localToken, address recipient, uint256 messageValue, bytes memory data) = _decodeHandleCall(innerCall);
+        // The same rule as a fresh delivery: pay what the message names, capped
+        // at what the router holds of the token right now.
+        uint256 value = _payableAmount(localToken, messageValue);
 
         _markProcessed(messageIdentifier);
         // Same distribution as a fresh delivery: when the single entry is handling
@@ -460,6 +441,31 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // a public recover() or a non-validator pays the recipient in full.
         _distributeDelivery(localToken, value, data, messageIdentifier);
         emit DeliveryRecovered(messageIdentifier, localToken, recipient, value);
+    }
+
+    /**
+     * @dev The amount a delivery of `token` pays out, for both a fresh delivery
+     * and a recovery: the value the message names, capped at the router's
+     * balance of the token read now.
+     *
+     * The rule follows the owner's decision for fee-on-transfer (tax,
+     * reflection) tokens: never refuse them, pay from the balance read at run
+     * time. The balance is shared by every strand of the token in this router,
+     * so a delivery whose own tokens arrived short can draw on another strand
+     * of the same token, and a later message may then find less than it names
+     * and be paid the smaller amount (the message is closed once paid). The
+     * owner's {claimTokens} is the rescue path that makes any good-faith actor
+     * left short whole.
+     * @param token the local token being paid
+     * @param value the value the message names
+     * @return the amount to pay: the smaller of `value` and the balance
+     */
+    function _payableAmount(address token, uint256 value) internal view returns (uint256) {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance < value) {
+            return balance;
+        }
+        return value;
     }
 
     /**

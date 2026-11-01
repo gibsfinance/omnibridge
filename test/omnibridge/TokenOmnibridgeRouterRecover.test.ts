@@ -532,14 +532,14 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         })
     })
 
-    // The router holds every user's strands of a token in one balance. Recovery must never pay one
-    // message out of another's funds by quietly paying less, and must never close a message it
-    // could not pay in full.
-    describe('recovery from a shared balance', () => {
+    // The owner's rule for a short balance (fee-on-transfer tokens are never refused): every delivery,
+    // fresh or recovered, pays what the message names capped at the router's balance of the token read
+    // at run time, and the message is then closed. The balance is shared by every strand of a token, so
+    // a short arrival can draw on another strand; the owner's claimTokens makes good-faith actors whole.
+    describe('recovery from a shared balance pays at most what is there', () => {
         /**
          * Puts `arrived` of the wrapped token in the router for a message that says `messageValue`, and
-         * marks the message relayed and delivered. This is a strand whose token arrived short, as a
-         * fee-on-transfer token does.
+         * marks the message relayed and delivered. This is a strand whose token arrived short.
          */
         const strandThatArrived = async (arrived: bigint, messageValue: bigint, recipient: string) => {
             const messageId = nextMessageId()
@@ -551,7 +551,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             return { messageId, message, signatures: await sign(message, [validators[0], validators[1]]) }
         }
 
-        it('two strands of one token: a short balance reverts and leaves the message claimable', async () => {
+        it('two strands of one token: the second, finding the balance short, is paid the capped amount and closed', async () => {
             const firstRecipient = signers[7]
             const secondRecipient = signers[8]
             const shortfall = value / 4n
@@ -563,29 +563,72 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await token.balanceOf(firstRecipient)).to.equal(value)
             expect(await token.balanceOf(router)).to.equal(value - shortfall)
 
-            // the second message is owed `value` but only `value - shortfall` is left
+            // the second message names `value` but only `value - shortfall` is left: that is what it gets
             await expect(router.recover(second.message, second.signatures))
-                .to.be.revertedWithCustomError(router, 'InsufficientBalanceForRecovery')
-                .withArgs(token.target, value - shortfall, value)
-            expect(await token.balanceOf(secondRecipient)).to.equal(0n)
-            expect(await router.processed(second.messageId)).to.equal(false)
-
-            // once the balance covers it, the same message recovers in full
-            await token.deposit({ value: shortfall })
-            await token.transfer(router, shortfall)
-            await router.recover(second.message, second.signatures)
-            expect(await token.balanceOf(secondRecipient)).to.equal(value)
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(second.messageId, token.target, router.target, value - shortfall)
+            expect(await token.balanceOf(secondRecipient)).to.equal(value - shortfall)
             expect(await token.balanceOf(router)).to.equal(0n)
-            expect(await router.processed(second.messageId)).to.equal(true)
+            expect(await router.processed(second.messageId), 'the message is closed').to.equal(true)
+            expect(await router.recover.staticCall(second.message, second.signatures)).to.equal(Outcome.AlreadyHandled)
         })
 
-        it('an empty balance reverts instead of paying nothing and closing the message', async () => {
+        it('an empty balance pays nothing and closes the message', async () => {
             const recipient = signers[7]
             const empty = await strandThatArrived(0n, value, recipient.address)
             await expect(router.recover(empty.message, empty.signatures))
-                .to.be.revertedWithCustomError(router, 'InsufficientBalanceForRecovery')
-                .withArgs(token.target, 0n, value)
-            expect(await router.processed(empty.messageId)).to.equal(false)
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(empty.messageId, token.target, router.target, 0n)
+            expect(await token.balanceOf(recipient)).to.equal(0n)
+            expect(await router.processed(empty.messageId)).to.equal(true)
+        })
+
+        describe('a fee-on-transfer token on the escrow path (handleNativeTokensAndCall)', () => {
+            const feeBasisPoints = 100n
+            const afterFee = (amount: bigint) => amount - (amount * feeBasisPoints) / 10_000n
+            // the mediator's release to the router burns 1%: this is what arrives in the router
+            const arrived = afterFee(value)
+            let feeToken!: any
+
+            beforeEach(async () => {
+                feeToken = await (await hre.ethers.getContractFactory('MockFeeOnTransferToken')).deploy(feeBasisPoints)
+                // put real custody in the mediator through an outbound transfer, as a user would
+                await feeToken.mint(user, value * 10n)
+                await feeToken.connect(user).approve(mediator, value * 10n)
+                await mediator.connect(user).getFunction('relayTokens(address,uint256)')(feeToken, value * 5n)
+            })
+
+            const feeTokenCall = (recipient: string) =>
+                ethers.concat([
+                    mediator.interface.getFunction('handleNativeTokensAndCall')!.selector,
+                    coder.encode(['address', 'address', 'uint256', 'bytes'], [feeToken.target, router.target, value, feeDirector(recipient, 0n)]),
+                ])
+
+            it('fresh delivery pays what arrived (the payout transfer burns its own 1%)', async () => {
+                const recipient = signers[7]
+                const messageId = nextMessageId()
+                await deliver(messageId, feeTokenCall(recipient.address), 3_000_000n)
+                expect(await amb.messageCallStatus(messageId)).to.equal(true)
+                expect(await feeToken.balanceOf(recipient)).to.equal(afterFee(arrived))
+                expect(await feeToken.balanceOf(router)).to.equal(0n)
+                expect(await router.processed(messageId)).to.equal(true)
+            })
+
+            it('a strand on its own recovers paying what is actually there', async () => {
+                const recipient = signers[7]
+                const messageId = nextMessageId()
+                const innerCall = feeTokenCall(recipient.address)
+                await strand(messageId, innerCall, { asset: feeToken, amount: arrived })
+                expect(await feeToken.balanceOf(router)).to.equal(arrived)
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                const signatures = await sign(message, [validators[0], validators[1]])
+                await expect(router.recover(message, signatures))
+                    .to.emit(router, 'DeliveryRecovered')
+                    .withArgs(messageId, feeToken.target, router.target, arrived)
+                expect(await feeToken.balanceOf(recipient)).to.equal(afterFee(arrived))
+                expect(await feeToken.balanceOf(router)).to.equal(0n)
+                expect(await router.processed(messageId)).to.equal(true)
+            })
         })
     })
 
