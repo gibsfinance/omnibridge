@@ -373,10 +373,14 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * caller, {_recoverWithReentrancyGuard}, holds it.
      *
      * The cheap checks run first, so a caller who loses a race or sends a
-     * message that cannot be recovered spends little gas: parse, executor,
-     * processed, the two bridge flags, then the recipient (decoded without any
-     * external call). None of them can lead to a payment, only to an exit.
-     * The validator signatures come next and gate everything that pays.
+     * message the bridge never delivered spends little gas: parse, executor,
+     * processed, then the two bridge flags. None of them can lead to a
+     * payment, only to an exit. The validator signatures come next and gate
+     * everything after them: the recipient check, the token lookup and the
+     * payment. The recipient check stays behind the signatures on purpose, so
+     * a real message for another recipient still proves the signature check
+     * against live data (it can only stop at {NotForThisRouter} once the
+     * signatures passed).
      */
     function _recover(bytes calldata message, bytes calldata signatures) internal returns (DeliveryOutcome outcome) {
         (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(message);
@@ -387,7 +391,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // Losing a race is not an error: nothing is written and nothing is paid.
         if (processed[messageIdentifier]) return DeliveryOutcome.AlreadyHandled;
 
-        address validatorContract = _requireStrandedInThisRouter(messageIdentifier, innerCall);
+        address validatorContract = _requireDeliveredByBridge(messageIdentifier);
         // Everything above can only exit. From here on the call can pay, so the
         // validator signatures must hold first.
         _verifySignatures(validatorContract, message, signatures);
@@ -397,17 +401,12 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev The cheap recovery checks that need the bridge but no signatures.
-     * Reverts unless the bridge relayed the message, the mediator call
-     * succeeded, and the message's recipient is this router. Pays nothing.
+     * Reverts unless the bridge relayed the message and the mediator call
+     * succeeded. Pays nothing.
      * @param messageIdentifier the identifier parsed from the message
-     * @param innerCall the mediator callback the message carries
      * @return validatorContract the bridge's validator set, for the signature check
      */
-    function _requireStrandedInThisRouter(bytes32 messageIdentifier, bytes calldata innerCall)
-        internal
-        view
-        returns (address validatorContract)
-    {
+    function _requireDeliveredByBridge(bytes32 messageIdentifier) internal view returns (address validatorContract) {
         IForeignArbitraryMessageBridge arbitraryMessageBridge =
             IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
         // relayedMessages is set before the recipient call, so it alone does not
@@ -418,19 +417,19 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // admit only a message whose tokens really reached this router.
         if (!arbitraryMessageBridge.relayedMessages(messageIdentifier)) revert MessageNotRelayed();
         if (!arbitraryMessageBridge.messageCallStatus(messageIdentifier)) revert MessageNotDelivered();
-        (,, address recipient,,) = _decodeHandleCallFields(innerCall);
-        if (recipient != address(this)) revert NotForThisRouter();
         return arbitraryMessageBridge.validatorContract();
     }
 
     /**
-     * @dev Pays a recovered message, once every check has passed. Records the
-     * message as processed before it moves any tokens.
+     * @dev Pays a recovered message once the signatures have passed. Reverts
+     * unless the message's recipient is this router. Records the message as
+     * processed before it moves any tokens.
      * @param messageIdentifier the identifier parsed from the message
      * @param innerCall the mediator callback the message carries
      */
     function _payRecoveredMessage(bytes32 messageIdentifier, bytes calldata innerCall) internal {
         (address localToken, address recipient, uint256 messageValue, bytes memory data) = _decodeHandleCall(innerCall);
+        if (recipient != address(this)) revert NotForThisRouter();
         // The same rule as a fresh delivery: pay what the message names, capped
         // at what the router holds of the token right now.
         uint256 value = _payableAmount(localToken, messageValue);
