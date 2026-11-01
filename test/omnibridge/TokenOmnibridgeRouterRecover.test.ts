@@ -633,4 +633,34 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await hookToken.balanceOf(runner)).to.equal(tip)
         })
     })
+
+    // The native coin payout must not hand the recipient all remaining gas: a recipient that burns it
+    // leaves the router 1/64, too little to fall back to the wrapped token, and the delivery strands.
+    describe('native payout gas', () => {
+        it('a gas-burning native recipient gets the wrapped token and the delivery completes', async () => {
+            const burner = await (await hre.ethers.getContractFactory('MockGasBurner')).deploy()
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: feeDirector(await burner.getAddress(), unwrapFlag) })
+            // an ordinary delivery budget, ample for a normal payout
+            await deliver(messageId, innerCall, 500_000n)
+            expect(await amb.messageCallStatus(messageId)).to.equal(true)
+            expect(await token.balanceOf(burner), 'the burner received the wrapped token instead').to.equal(value)
+            expect(await hre.ethers.provider.getBalance(burner)).to.equal(0n)
+            expect(await token.balanceOf(router), 'nothing strands in the router').to.equal(0n)
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+
+        it('a Safe-shaped proxy wallet still receives native coin under the gas cap', async () => {
+            const implementation = await (await hre.ethers.getContractFactory('MockWalletImplementation')).deploy()
+            const wallet = await (await hre.ethers.getContractFactory('MockProxyWallet')).deploy(implementation)
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: feeDirector(await wallet.getAddress(), unwrapFlag) })
+            await deliver(messageId, innerCall, 500_000n)
+            expect(await hre.ethers.provider.getBalance(wallet), 'paid in native coin').to.equal(value)
+            expect(await token.balanceOf(wallet), 'not in the wrapped token').to.equal(0n)
+            expect(await token.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+    })
 })

@@ -142,6 +142,21 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     uint256 private constant _IDLE_RUNNER = 1;
 
     /**
+     * @dev The most gas a native coin payout hands the recipient (the call adds
+     * the 2,300 stipend on top). Without a cap a recipient that burns its gas
+     * leaves this router 1/64 of what remained, too little to fall back to the
+     * wrapped token, and the delivery strands with the relayer unpaid.
+     *
+     * The number must still cover smart-contract wallets. A Safe 1.3.0 proxy's
+     * receive (cold storage read of the singleton, cold delegate call, one event)
+     * measured about 6,700 gas on Ethereum mainnet; ERC-4337 accounts and other
+     * proxy wallets follow the same proxy-plus-event shape. 50,000 leaves more
+     * than seven times that, and bounds what a hostile recipient can burn per
+     * payout. A recipient that needs more receives the wrapped token instead.
+     */
+    uint256 private constant NATIVE_PAYOUT_GAS_LIMIT = 50_000;
+
+    /**
      * @dev Initializes this contract.
      * @param _bridge address of the HomeOmnibridge/ForeignOmnibridge contract.
      * @param _wNative address of the WNative token used for wrapping/unwrapping native coins (e.g. WETH/WBNB/WXDAI).
@@ -324,16 +339,21 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Distributes tokens to a recipient. For a native payout that the
-     * recipient refuses, it falls back to delivering the wrapped token rather
-     * than reverting, so a recipient that cannot receive the native coin never
-     * strands the transfer.
+     * recipient refuses, or cannot finish within {NATIVE_PAYOUT_GAS_LIMIT}, it
+     * falls back to delivering the wrapped token rather than reverting, so a
+     * recipient that cannot receive the native coin never strands the transfer.
      */
     function _distribute(bool native, address token, address recipient, uint256 amount) internal {
         if (!native) {
             IERC20(token).safeTransfer(recipient, amount);
             return;
         }
-        (bool success,) = recipient.call{value: amount}("");
+        bool success;
+        // Assembly so the recipient's return data is never copied: a high-level
+        // call copies it into memory, which the recipient could make costly.
+        assembly {
+            success := call(NATIVE_PAYOUT_GAS_LIMIT, recipient, amount, 0, 0, 0, 0)
+        }
         if (success) {
             return;
         }
