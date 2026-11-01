@@ -1,6 +1,8 @@
 import hre from 'hardhat'
 import { expect } from 'chai'
 import * as ethers from 'ethers'
+import * as helpers from '../helpers/helpers'
+import { buildMessage, packSignatures } from '../helpers/ambMessage'
 
 // Ethereum mainnet, pinned. Read only: the fork lives in the Hardhat process and nothing is broadcast.
 const RPC_CANDIDATES = ['https://rpc-ethereum.g4mm4.io', 'https://eth.llamarpc.com', 'https://ethereum-rpc.publicnode.com']
@@ -19,12 +21,18 @@ const MEDIATOR = '0x1715a3E4A142d8b698131108995174F37aEBA10D'
 const DEPLOYED_ROUTER = '0x2Ed02372C3efF1F239B22a901ceA8Cf6fbf82d8d'
 // Wrapped ether. The mediator holds it in custody, registered as a native token.
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+// The bridged token the mediator mints for PulseChain's copy of WETH, which has the same address as WETH.
+const BRIDGED_PULSECHAIN_WETH = '0xb1A7F8b3AdA1Cbd7752c1306725b07D2F8B4e726'
+// The storage slot of AMBMock.validatorContract. Checked by reading it back after the write.
+const AMB_MOCK_VALIDATOR_CONTRACT_SLOT = 10
 
 const coder = ethers.AbiCoder.defaultAbiCoder()
 const unwrapFlag = 0b0010n
 
 const mediatorAbi = [
     'function handleNativeTokensAndCall(address _token, address _recipient, uint256 _value, bytes memory _data) external',
+    'function handleBridgedTokensAndCall(address _token, address _recipient, uint256 _value, bytes memory _data) external',
+    'function bridgedTokenAddress(address) view returns (address)',
     'function mediatorContractOnOtherSide() view returns (address)',
     'function isRegisteredAsNativeToken(address) view returns (bool)',
     'function bridgeContract() view returns (address)',
@@ -248,6 +256,131 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             )
             expect(corruptedOutcome).to.not.contain('NotForThisRouter')
             expect(corruptedOutcome).to.match(/SignerNotValidator|InvalidSignature|DuplicateSignature/)
+        })
+    })
+
+    describe('G: recovery of a bridged-token strand pays the bridged token, never real WETH', () => {
+        let forked = false
+        let mediator: any
+        let weth: any
+        let bridgedWeth: any
+        let amb: any
+        let router: any
+        let otherSideMediator!: string
+        let validators!: ethers.HDNodeWallet[]
+        let messageCounter = 0
+        const value = ethers.parseEther('0.01')
+
+        before(async function () {
+            const failure = await forkEthereum(ROUTER_LIVE_BLOCK)
+            if (failure) {
+                await skipForkFailure(failure)
+                return this.skip()
+            }
+            forked = true
+            const [owner] = await hre.ethers.getSigners()
+            mediator = new ethers.Contract(MEDIATOR, mediatorAbi, hre.ethers.provider)
+            weth = new ethers.Contract(WETH, erc20Abi, hre.ethers.provider)
+            bridgedWeth = new ethers.Contract(BRIDGED_PULSECHAIN_WETH, erc20Abi, hre.ethers.provider)
+            otherSideMediator = await mediator.mediatorContractOnOtherSide()
+            // The live mapping this test is about: the message token WETH resolves to a different local token.
+            expect(await mediator.bridgedTokenAddress(WETH)).to.equal(BRIDGED_PULSECHAIN_WETH)
+            expect((await mediator.bridgeContract()).toLowerCase()).to.equal(BRIDGE.toLowerCase())
+
+            // Replace the bridge with the test bridge so this test can relay messages and sign them with
+            // validators it controls. The real mediator code runs untouched.
+            validators = [0, 1, 2].map(() => ethers.Wallet.createRandom())
+            const bridgeValidators = await (await hre.ethers.getContractFactory('BridgeValidators')).deploy()
+            await bridgeValidators.initialize(2, validators.map((wallet) => wallet.address), owner)
+            const ambArtifact = await hre.artifacts.readArtifact('AMBMock')
+            await hre.network.provider.send('hardhat_setCode', [BRIDGE, ambArtifact.deployedBytecode])
+            await hre.network.provider.send('hardhat_setStorageAt', [
+                BRIDGE,
+                ethers.toBeHex(AMB_MOCK_VALIDATOR_CONTRACT_SLOT),
+                ethers.zeroPadValue(await bridgeValidators.getAddress(), 32),
+            ])
+            amb = await hre.ethers.getContractAt('AMBMock', BRIDGE)
+            expect(await amb.validatorContract()).to.equal(await bridgeValidators.getAddress())
+
+            router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(MEDIATOR, WETH, owner)
+        })
+
+        const nextMessageId = () => ethers.keccak256(ethers.toUtf8Bytes(`router-fork-bridged-${messageCounter++}`))
+        const relay = (messageId: string, innerCall: string, gas: bigint) =>
+            amb.executeMessageCall(MEDIATOR, otherSideMediator, innerCall, messageId, gas, { gasLimit: 15_000_000n })
+        const signed = async (messageId: string, innerCall: string) => {
+            const message = buildMessage({ messageId, sender: otherSideMediator, executor: MEDIATOR, innerCall })
+            const pieces = []
+            for (const wallet of [validators[0], validators[1]]) {
+                pieces.push(helpers.signatureToVRS(await wallet.signMessage(ethers.getBytes(message))))
+            }
+            return { message, signatures: packSignatures(pieces) }
+        }
+        /** Finds a gas budget where the real mediator succeeds and the router callback runs out of gas. */
+        const strand = async (messageId: string, innerCall: string, asset: any) => {
+            const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
+            const holdingBefore: bigint = await asset.balanceOf(router)
+            for (let gas = 60_000n; gas <= 600_000n; gas += 2_000n) {
+                const snapshot = await takeSnapshot()
+                await (await relay(messageId, innerCall, gas)).wait()
+                const gained = ((await asset.balanceOf(router)) as bigint) - holdingBefore
+                if (gained === value && (await amb.messageCallStatus(messageId))) return gas
+                await snapshot.restore()
+            }
+            throw new Error('no gas budget produced a strand')
+        }
+        const feeDirector = (recipient: string) =>
+            coder.encode(['address', 'uint256', 'uint256', 'uint256'], [recipient, 0n, 0n, 0n])
+
+        it('pays 0xb1A7 for a real-shaped handleBridgedTokensAndCall strand and refuses the WETH theft', async function () {
+            if (!forked) return this.skip()
+            const victim = ethers.Wallet.createRandom().address
+            const attacker = ethers.Wallet.createRandom().address
+            const honestRecipient = ethers.Wallet.createRandom().address
+
+            // 1) an honest user's real WETH delivery strands in the router
+            const victimId = nextMessageId()
+            const victimCall = mediator.interface.encodeFunctionData('handleNativeTokensAndCall', [WETH, router.target, value, feeDirector(victim)])
+            await strand(victimId, victimCall, weth)
+            expect(await weth.balanceOf(router)).to.equal(value)
+
+            // 2) the attacker bridges PulseChain-WETH (same address as WETH) with the 20-byte payload, which
+            //    the router rejects because the mediator hands it 0xb1A7, not WETH. It strands at any gas.
+            const attackId = nextMessageId()
+            const attackCall = mediator.interface.encodeFunctionData('handleBridgedTokensAndCall', [WETH, router.target, value, attacker])
+            await (await relay(attackId, attackCall, 2_000_000n)).wait()
+            expect(await amb.messageCallStatus(attackId)).to.equal(true)
+            expect(await bridgedWeth.balanceOf(router)).to.equal(value)
+
+            const attack = await signed(attackId, attackCall)
+            const attackOutcome = await router.recover.staticCall(attack.message, attack.signatures).then(
+                () => 'did not revert',
+                () => 'reverted',
+            )
+            expect(attackOutcome, 'the attacker message cannot be recovered').to.equal('reverted')
+            expect(await hre.ethers.provider.getBalance(attacker)).to.equal(0n)
+            expect(await weth.balanceOf(attacker)).to.equal(0n)
+            expect(await weth.balanceOf(router), 'the honest WETH is untouched').to.equal(value)
+
+            // 3) an honest bridged-token strand with a fee director recovers in the bridged token
+            const bridgedId = nextMessageId()
+            const bridgedCall = mediator.interface.encodeFunctionData('handleBridgedTokensAndCall', [WETH, router.target, value, feeDirector(honestRecipient)])
+            await strand(bridgedId, bridgedCall, bridgedWeth)
+            const bridgedMessage = await signed(bridgedId, bridgedCall)
+            const receipt = await (await router.recover(bridgedMessage.message, bridgedMessage.signatures)).wait()
+            const recovered = receipt.logs
+                .map((log: ethers.Log) => router.interface.parseLog(log))
+                .find((parsed: ethers.LogDescription | null) => parsed?.name === 'DeliveryRecovered')
+            expect(recovered.args.token).to.equal(BRIDGED_PULSECHAIN_WETH)
+            expect(await bridgedWeth.balanceOf(honestRecipient)).to.equal(value)
+            expect(await weth.balanceOf(honestRecipient)).to.equal(0n)
+            expect(await weth.balanceOf(router), 'the honest WETH is still untouched').to.equal(value)
+
+            // 4) the honest WETH strand still recovers in full
+            const victimMessage = await signed(victimId, victimCall)
+            await (await router.recover(victimMessage.message, victimMessage.signatures)).wait()
+            expect(await weth.balanceOf(victim)).to.equal(value)
+            expect(await weth.balanceOf(router)).to.equal(0n)
         })
     })
 })

@@ -38,6 +38,14 @@ interface IForeignArbitraryMessageBridge {
 }
 
 /**
+ * @dev The read surface of the mediator's bridged token registry that recovery
+ * needs: the local token the mediator mints for a token on the other chain.
+ */
+interface IBridgedTokenRegistry {
+    function bridgedTokenAddress(address nativeToken) external view returns (address);
+}
+
+/**
  * @title TokenOmnibridgeBase
  * @dev Omnibridge extension for processing tokens that are not otherwise
  * delivered automatically because of foreign omnibridge settings.
@@ -85,12 +93,21 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     error InvalidSignature();
     error SignerNotValidator();
     error DuplicateSignature();
+    /**
+     * @dev The mediator has no local bridged token for the other chain's token
+     * that a bridged-token message names, so recovery cannot tell what to pay.
+     * @param messageToken the token address the message names, on the other chain
+     */
+    error UnknownBridgedToken(address messageToken);
 
     /**
      * @dev Emitted when {recover} finishes a stranded delivery.
      * @param messageId the Arbitrary Message Bridge message identifier that was recovered
-     * @param token the token paid out
-     * @param recipient the address paid
+     * @param token the local token paid out: the token the mediator really sent
+     * this router, which for a bridged-token message is the mediator's bridged
+     * token and not the other chain's address that the message names
+     * @param recipient the recipient the message names, which recovery requires to
+     * be this router (the end recipient is inside the fee director data)
      * @param value the amount paid, after the fee-on-transfer balance clamp
      */
     event DeliveryRecovered(bytes32 indexed messageId, address indexed token, address indexed recipient, uint256 value);
@@ -262,12 +279,12 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (!arbitraryMessageBridge.messageCallStatus(messageIdentifier)) revert MessageNotDelivered();
         if (processed[messageIdentifier]) revert AlreadyProcessed();
 
-        (address token, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
+        (address localToken, address recipient, uint256 value, bytes memory data) = _decodeHandleCall(innerCall);
         if (recipient != address(this)) revert NotForThisRouter();
 
         _markProcessed(messageIdentifier);
 
-        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 balance = IERC20(localToken).balanceOf(address(this));
         if (balance < value) {
             // same fee-on-transfer clamp the delivery path applies
             value = balance;
@@ -275,8 +292,8 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // Same distribution as a fresh delivery: when this recovery came through
         // the single entry with a validator runner, that runner earns the tip;
         // a direct recover() or a non-validator leaves no runner, paying in full.
-        _distributeDelivery(token, value, data);
-        emit DeliveryRecovered(messageIdentifier, token, recipient, value);
+        _distributeDelivery(localToken, value, data);
+        emit DeliveryRecovered(messageIdentifier, localToken, recipient, value);
     }
 
     /**
@@ -416,17 +433,49 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     /**
      * @dev Decodes the mediator callback embedded in a message. Accepts only the
      * two "and call" selectors that carry a fee director, which is exactly the
-     * shape this router delivers; anything else is rejected.
+     * shape this router delivers; anything else is rejected. Returns the LOCAL
+     * token the mediator sent this router (see {_localToken}), never the raw
+     * token address from the message.
      */
     function _decodeHandleCall(bytes calldata innerCall)
         internal
-        pure
-        returns (address token, address recipient, uint256 value, bytes memory data)
+        view
+        returns (address localToken, address recipient, uint256 value, bytes memory data)
     {
         if (innerCall.length < 4) revert MalformedMessage();
         bytes4 selector = bytes4(innerCall[0:4]);
         if (selector != HANDLE_BRIDGED_SELECTOR && selector != HANDLE_NATIVE_SELECTOR) revert UnsupportedSelector();
-        (token, recipient, value, data) = abi.decode(innerCall[4:], (address, address, uint256, bytes));
+        address messageToken;
+        (messageToken, recipient, value, data) = abi.decode(innerCall[4:], (address, address, uint256, bytes));
+        localToken = _localToken(selector, messageToken);
+    }
+
+    /**
+     * @dev Resolves the token a mediator callback really moved on this chain.
+     *
+     * handleNativeTokensAndCall names a token that is native to this chain, and
+     * the mediator transfers that same address out of its custody
+     * (BasicOmnibridge.handleNativeTokensAndCall), so the message token is the
+     * local token.
+     *
+     * The bridged-token callbacks name the token's address on the OTHER chain.
+     * The mediator converts it with bridgedTokenAddress before it mints
+     * (BasicOmnibridge.handleBridgedTokensAndCall). An address on the other chain
+     * can equal a real token's address here (PulseChain copied Ethereum's state),
+     * so paying the message token would pay a different, real token out of other
+     * users' funds. The pairing is set once and never cleared, so the lookup
+     * today returns the token the mediator minted when the message ran.
+     * @param selector the mediator callback selector from the message
+     * @param messageToken the token address the message names
+     * @return the local token the mediator sent this router
+     */
+    function _localToken(bytes4 selector, address messageToken) internal view returns (address) {
+        if (selector == HANDLE_NATIVE_SELECTOR) {
+            return messageToken;
+        }
+        address bridgedToken = IBridgedTokenRegistry(bridge).bridgedTokenAddress(messageToken);
+        if (bridgedToken == address(0)) revert UnknownBridgedToken(messageToken);
+        return bridgedToken;
     }
 
     /**

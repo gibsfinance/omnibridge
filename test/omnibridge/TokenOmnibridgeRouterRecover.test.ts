@@ -124,12 +124,23 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
     const deliver = (messageId: string, innerCall: string, gas: bigint) =>
         amb.executeMessageCall(mediator, mediator, innerCall, messageId, gas, { gasLimit: 8_000_000n })
 
-    /** Finds a gas budget where the mediator succeeds but the router callback runs out of gas. */
-    const strand = async (messageId: string, innerCall: string) => {
-        for (let gas = 60_000n; gas < 700_000n; gas += 2_000n) {
+    /**
+     * Finds a gas budget where the mediator succeeds but the router callback runs out of gas.
+     * A strand is the router's holding of `asset` growing by exactly `amount` while the bridge
+     * records the mediator call as successful. Defaults: the wrapped token and the test value.
+     */
+    const strand = async (
+        messageId: string,
+        innerCall: string,
+        options: { asset?: any; amount?: bigint; maximumGas?: bigint } = {},
+    ) => {
+        const asset = options.asset ?? token
+        const amount = options.amount ?? value
+        const holdingBefore: bigint = await asset.balanceOf(router)
+        for (let gas = 60_000n; gas < (options.maximumGas ?? 700_000n); gas += 2_000n) {
             const snapshot = await takeSnapshot()
             await deliver(messageId, innerCall, gas)
-            const stranded = (await token.balanceOf(router)) === value
+            const stranded = (await asset.balanceOf(router)) - holdingBefore === amount
             const mediatorReportedSuccess = await amb.messageCallStatus(messageId)
             if (stranded && mediatorReportedSuccess) return gas
             await snapshot.restore()
@@ -401,6 +412,117 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect((await token.balanceOf(user)) - recipientBefore).to.equal(value) // full value, no tip taken
             expect(await token.balanceOf(runner.address)).to.equal(runnerBefore) // non-validator earns nothing
             expect(await router.processed(messageId)).to.equal(true)
+        })
+    })
+
+    // A handleBridgedTokensAndCall message names the token's address on the OTHER chain. The
+    // mediator mints its own bridged token, found with bridgedTokenAddress(messageToken). PulseChain
+    // copied Ethereum's state, so PulseChain's copy of WETH has the same address as the real WETH
+    // here. These tests build exactly that: the message token is the local wrapped token's address,
+    // and the mediator mints a DIFFERENT bridged token for it.
+    describe('recovery of a bridged token resolves the local token', () => {
+        const erc20 = ['function balanceOf(address) view returns (uint256)']
+        let bridged!: ethers.Contract
+        let attacker!: HardhatEthersSigner
+        let victim!: HardhatEthersSigner
+
+        const bridgedCall = (data: string, amount = value) =>
+            ethers.concat([
+                mediator.interface.getFunction('handleBridgedTokensAndCall')!.selector,
+                coder.encode(['address', 'address', 'uint256', 'bytes'], [token.target, router.target, amount, data]),
+            ])
+
+        /** Strands a real wrapped-token delivery from an honest user, so the router holds other people's funds. */
+        const strandHonestWrappedDelivery = async () => {
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: feeDirector(victim.address, 0n) })
+            await strand(messageId, innerCall)
+            return { messageId, message: buildMessage({ messageId, executor: mediator.target as string, innerCall }) }
+        }
+
+        beforeEach(async () => {
+            attacker = signers[7]
+            victim = signers[8]
+            // First transfer of the other chain's "WETH" registers the pair and deploys the bridged token.
+            const registration = mediator.interface.encodeFunctionData('deployAndHandleBridgedTokens', [
+                token.target,
+                'Wrapped Ether',
+                'WETH',
+                18,
+                owner.address,
+                1n,
+            ])
+            await deliver(nextMessageId(), registration, 3_000_000n)
+            const bridgedAddress: string = await mediator.bridgedTokenAddress(token.target)
+            expect(bridgedAddress).to.not.equal(ethers.ZeroAddress)
+            expect(bridgedAddress).to.not.equal(token.target)
+            bridged = new ethers.Contract(bridgedAddress, erc20, hre.ethers.provider)
+        })
+
+        it('pays the bridged token the mediator minted, not the token named in the message', async () => {
+            await strandHonestWrappedDelivery()
+            expect(await token.balanceOf(router)).to.equal(value)
+
+            const messageId = nextMessageId()
+            const innerCall = bridgedCall(feeDirector(user.address, 0n))
+            await strand(messageId, innerCall, { asset: bridged })
+            expect(await bridged.balanceOf(router)).to.equal(value)
+
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            const wrappedBefore = await token.balanceOf(user)
+            await expect(router.connect(user).recover(message, signatures))
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(messageId, bridged.target, router.target, value)
+            expect(await bridged.balanceOf(user)).to.equal(value)
+            expect(await token.balanceOf(user)).to.equal(wrappedBefore)
+            expect(await bridged.balanceOf(router)).to.equal(0n)
+            // the honest user's stranded wrapped token is untouched
+            expect(await token.balanceOf(router)).to.equal(value)
+        })
+
+        it('refuses the attack: a rejected bridged delivery cannot unwrap other users\' wrapped token', async () => {
+            const honest = await strandHonestWrappedDelivery()
+            // The 20-byte legacy form demands the wrapped token. The mediator hands the router the
+            // bridged token, so the callback rejects it at any gas and the delivery strands.
+            const messageId = nextMessageId()
+            const innerCall = bridgedCall(attacker.address)
+            await deliver(messageId, innerCall, 3_000_000n)
+            expect(await amb.messageCallStatus(messageId)).to.equal(true)
+            expect(await bridged.balanceOf(router)).to.equal(value)
+            expect(await token.balanceOf(router)).to.equal(value)
+
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            const attackerNativeBefore = await hre.ethers.provider.getBalance(attacker)
+            const attackerWrappedBefore = await token.balanceOf(attacker)
+            await expect(router.connect(stranger).recover(message, signatures)).to.be.reverted
+            expect(await hre.ethers.provider.getBalance(attacker)).to.equal(attackerNativeBefore)
+            expect(await token.balanceOf(attacker)).to.equal(attackerWrappedBefore)
+            expect(await token.balanceOf(router)).to.equal(value)
+            expect(await router.processed(messageId)).to.equal(false)
+
+            // the honest strand is still whole and still recoverable
+            const honestSignatures = await sign(honest.message, [validators[0], validators[1]])
+            await router.connect(stranger).recover(honest.message, honestSignatures)
+            expect(await token.balanceOf(victim)).to.equal(value)
+            expect(await token.balanceOf(router)).to.equal(0n)
+        })
+
+        it('reverts UnknownBridgedToken when the mediator has no bridged token for the message token', async () => {
+            await strandHonestWrappedDelivery()
+            const messageId = nextMessageId()
+            const unknownToken = ethers.Wallet.createRandom().address
+            const innerCall = ethers.concat([
+                mediator.interface.getFunction('handleBridgedTokensAndCall')!.selector,
+                coder.encode(['address', 'address', 'uint256', 'bytes'], [unknownToken, router.target, value, feeDirector(user.address, 0n)]),
+            ])
+            // any call that succeeds marks the message relayed and delivered
+            await amb.executeMessageCall(token, router, token.interface.encodeFunctionData('deposit'), messageId, 100_000n)
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'UnknownBridgedToken')
+            expect(await token.balanceOf(router)).to.equal(value)
         })
     })
 })
