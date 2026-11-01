@@ -170,4 +170,85 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             expect(await router.processed(messageId)).to.equal(false)
         })
     })
+
+    // A fresh delivery through the entry runs inside the relayer's own transaction. The bridge's
+    // "safe" mode checks only the mediator's result, and the mediator swallows a failed router
+    // callback, so without a check of its own the router could strand the tokens in that very
+    // transaction. When the message is for this router, the delivery must be all or nothing.
+    describe('fresh message (real mediator): the router delivery is all or nothing', () => {
+        const value = oneEther / 10n
+        let user!: HardhatEthersSigner
+        let runner!: HardhatEthersSigner
+        let stranger!: HardhatEthersSigner
+        let token!: any
+        let mediator!: any
+        let router!: any
+
+        const deploy = async () => {
+            signers = await hre.ethers.getSigners()
+            ;[owner, user, runner, stranger] = signers
+            const PermittableToken = await setup.requirePrecompiled('PermittableToken')
+            const tokenImage = await PermittableToken.deploy('TEST', 'TST', 18, 1337)
+            const tokenFactory = await (await hre.ethers.getContractFactory('TokenFactory')).deploy(owner, tokenImage)
+            mediator = await (await hre.ethers.getContractFactory('ForeignOmnibridge')).deploy(' on Testnet')
+            const bridgeValidators = await (await hre.ethers.getContractFactory('BridgeValidators')).deploy()
+            await bridgeValidators.initialize(1, [owner.address], owner)
+            const amb = await (await hre.ethers.getContractFactory('AMBMock')).deploy(bridgeValidators)
+            await mediator.initialize(amb, mediator, [oneEther * 100n, oneEther * 10n, 1n], [oneEther * 100n, oneEther * 10n], 1000000, owner, tokenFactory)
+            token = await (await hre.ethers.getContractFactory('WETH')).deploy()
+            router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(mediator, token, owner)
+            await router.connect(owner).setValidatorStatus(runner, true)
+            await router.connect(user).getFunction('wrapAndRelayTokens()')({ value: oneEther })
+        }
+        beforeEach(async () => {
+            await loadFixture(deploy)
+        })
+
+        const messageFor = (recipient: string, gas: bigint) =>
+            buildMessage({
+                messageId: ethers.keccak256(ethers.toUtf8Bytes('dispatch-fresh-real')),
+                sender: mediator.target as string,
+                executor: mediator.target as string,
+                gas,
+                innerCall: handleNativeCall({ token: token.target as string, recipient, value, data: feeDirector(stranger.address, 0n) }),
+            })
+
+        it('no message gas budget strands the tokens: each run delivers in full or reverts DeliveryNotCompleted', async () => {
+            const outcomes = { delivered: 0, deliveryNotCompleted: 0, otherRevert: 0, stranded: 0 }
+            for (let gas = 60_000n; gas < 400_000n; gas += 2_000n) {
+                const snapshot = await takeSnapshot()
+                const message = messageFor(router.target as string, gas)
+                const dryRun = await router
+                    .connect(user)
+                    .safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, '0x', { gasLimit: 8_000_000n })
+                    .then(
+                        () => 'ok',
+                        (error: any) => router.interface.parseError(error.data ?? '0x')?.name ?? 'other',
+                    )
+                if (dryRun === 'DeliveryNotCompleted') outcomes.deliveryNotCompleted++
+                if (dryRun !== 'ok' && dryRun !== 'DeliveryNotCompleted') outcomes.otherRevert++
+                if (dryRun === 'ok') {
+                    const strangerBefore = await token.balanceOf(stranger)
+                    await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x', { gasLimit: 8_000_000n })
+                    const deliveredInFull =
+                        (await token.balanceOf(stranger)) - strangerBefore === value && (await token.balanceOf(router)) === 0n
+                    if (deliveredInFull) outcomes.delivered++
+                    if (!deliveredInFull) outcomes.stranded++
+                }
+                await snapshot.restore()
+            }
+            console.log(`      outcomes over the sweep: ${JSON.stringify(outcomes)}`)
+            expect(outcomes.stranded, 'no budget leaves the tokens stranded').to.equal(0)
+            expect(outcomes.deliveryNotCompleted, 'some budget reached the router check').to.be.greaterThan(0)
+            expect(outcomes.delivered, 'ample budgets deliver').to.be.greaterThan(0)
+        })
+
+        it('does not apply the check to a message for another recipient', async () => {
+            // An address with no code gets no callback, so the router records nothing for it.
+            const message = messageFor(stranger.address, 2_000_000n)
+            await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x')
+            expect(await token.balanceOf(stranger)).to.equal(value)
+            expect(await router.processed(ethers.keccak256(ethers.toUtf8Bytes('dispatch-fresh-real')))).to.equal(false)
+        })
+    })
 })

@@ -30,6 +30,35 @@ contract AMBMock {
         bytes32 _messageId,
         uint256 _gas
     ) external {
+        _executeMessageCall(_contract, _sender, _data, _messageId, _gas);
+    }
+
+    /**
+     * @dev Stands in for the foreign bridge's "safe" delivery: it reads the message
+     * identifier, sender, executor and gas limit from the message header, runs the
+     * executor call with that gas limit, and reverts unless the executor call
+     * succeeded. Like the real bridge, it only sees the executor's result, so a
+     * failure the executor swallows (a mediator's receiver callback) still passes.
+     * Signatures are ignored. A message is relayed at most once.
+     */
+    function safeExecuteSignaturesWithAutoGasLimit(bytes calldata _message, bytes calldata) external {
+        bytes32 id = bytes32(_message[0:32]);
+        address sender = address(bytes20(_message[32:52]));
+        address executor = address(bytes20(_message[52:72]));
+        uint256 gasLimit = uint32(bytes4(_message[72:76]));
+        uint256 innerStart = 79 + uint8(_message[76]) + uint8(_message[77]);
+        require(!relayedMessages[id], "already relayed");
+        bool status = _executeMessageCall(executor, sender, _message[innerStart:], id, gasLimit);
+        require(status, "message call failed");
+    }
+
+    function _executeMessageCall(
+        address _contract,
+        address _sender,
+        bytes calldata _data,
+        bytes32 _messageId,
+        uint256 _gas
+    ) internal returns (bool status) {
         messageSender = _sender;
         messageId = _messageId;
         transactionHash = _messageId;
@@ -37,7 +66,7 @@ contract AMBMock {
         // the real foreign bridge records the message as relayed before it calls
         // the executor, so recovery can tell a relayed message from a pending one
         relayedMessages[_messageId] = true;
-        (bool status, ) = _contract.call{ gas: _gas }(_data);
+        (status, ) = _contract.call{ gas: _gas }(_data);
         messageSender = address(0);
         messageId = bytes32(0);
         transactionHash = bytes32(0);

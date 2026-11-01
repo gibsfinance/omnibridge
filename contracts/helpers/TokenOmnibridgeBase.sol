@@ -110,6 +110,14 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param value what the message is owed
      */
     error InsufficientBalanceForRecovery(address token, uint256 balance, uint256 value);
+    /**
+     * @dev A fresh delivery to this router through the single entry returned
+     * from the bridge without this router recording the message as paid: the
+     * mediator swallowed a failed {onTokenBridged}. Reverting keeps the tokens
+     * out of the router and leaves the message unrelayed, so it can be retried.
+     * @param messageId the Arbitrary Message Bridge message identifier
+     */
+    error DeliveryNotCompleted(bytes32 messageId);
 
     /**
      * @dev Emitted when {recover} finishes a stranded delivery.
@@ -488,12 +496,52 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         view
         returns (address localToken, address recipient, uint256 value, bytes memory data)
     {
-        if (innerCall.length < 4) revert MalformedMessage();
-        bytes4 selector = bytes4(innerCall[0:4]);
-        if (selector != HANDLE_BRIDGED_SELECTOR && selector != HANDLE_NATIVE_SELECTOR) revert UnsupportedSelector();
+        bytes4 selector;
         address messageToken;
-        (messageToken, recipient, value, data) = abi.decode(innerCall[4:], (address, address, uint256, bytes));
+        (selector, messageToken, recipient, value, data) = _decodeHandleCallFields(innerCall);
         localToken = _localToken(selector, messageToken);
+    }
+
+    /**
+     * @dev Decodes the fields of a supported mediator callback exactly as the
+     * message carries them. Reverts for a callback this router does not deliver.
+     * @return selector the mediator callback selector
+     * @return messageToken the token address the message names (see {_localToken})
+     * @return recipient the recipient the message names
+     * @return value the amount the message names
+     * @return data the extra data the message carries for the recipient
+     */
+    function _decodeHandleCallFields(bytes calldata innerCall)
+        internal
+        pure
+        returns (bytes4 selector, address messageToken, address recipient, uint256 value, bytes memory data)
+    {
+        if (innerCall.length < 4) revert MalformedMessage();
+        selector = bytes4(innerCall[0:4]);
+        if (!_isSupportedHandleSelector(selector)) revert UnsupportedSelector();
+        (messageToken, recipient, value, data) = abi.decode(innerCall[4:], (address, address, uint256, bytes));
+    }
+
+    /**
+     * @dev Whether a selector is one of the mediator callbacks this router
+     * delivers and can recover.
+     */
+    function _isSupportedHandleSelector(bytes4 selector) internal pure returns (bool) {
+        return selector == HANDLE_BRIDGED_SELECTOR || selector == HANDLE_NATIVE_SELECTOR;
+    }
+
+    /**
+     * @dev Whether a message delivers tokens to this router through this
+     * router's own mediator, using a callback this router handles. Never
+     * reverts for a message that is for someone else.
+     */
+    function _messageDeliversToThisRouter(bytes calldata message) internal view returns (bool) {
+        (, address executor, bytes calldata innerCall) = _parseMessage(message);
+        if (executor != bridge) return false;
+        if (innerCall.length < 4) return false;
+        if (!_isSupportedHandleSelector(bytes4(innerCall[0:4]))) return false;
+        (,, address recipient,,) = _decodeHandleCallFields(innerCall);
+        return recipient == address(this);
     }
 
     /**
@@ -603,8 +651,17 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         require(msg.sender == address(wNative));
     }
     /**
-     * @dev Validates provided signatures and relays a given message. Passes all available gas for the execution.
-     * The message is not allowed to fail. The whole tx will be revered if message fails.
+     * @dev Validates provided signatures and relays a given message, or finishes
+     * it when it already stranded (see the branch comment below).
+     *
+     * A fresh message runs through the bridge's "safe" delivery, which reverts
+     * when the mediator call fails. The bridge sees only the mediator's result,
+     * and the mediator swallows a failed receiver callback, so the bridge alone
+     * would let a delivery to this router strand inside this very transaction.
+     * When the message delivers to this router, the router therefore also
+     * requires that {onTokenBridged} recorded the message, and reverts
+     * {DeliveryNotCompleted} otherwise: this router's own delivery is all or
+     * nothing. A message for any other recipient gets only the bridge's check.
      * @param runner the validator you would like to attribute this method call to
      * @param _data bytes to be relayed
      * @param _signatures bytes blob with signatures to be validated
@@ -652,6 +709,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             revert NotPayable();
         }
         IBasicForeignAMB(address(arbitraryMessageBridge)).safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
+        if (_messageDeliversToThisRouter(_data) && !processed[messageIdentifier]) {
+            revert DeliveryNotCompleted(messageIdentifier);
+        }
     }
     /**
      * updates the filter to any contract.

@@ -3,12 +3,12 @@ import * as ethers from 'ethers'
 const coder = ethers.AbiCoder.defaultAbiCoder()
 
 /** Builds a message in the Arbitrary Message Bridge layout. */
-export const buildMessage = (options: { messageId: string; executor: string; innerCall: string; sender: string }) =>
+export const buildMessage = (options: { messageId: string; executor: string; innerCall: string; sender: string; gas?: bigint }) =>
     ethers.concat([
         options.messageId,
         options.sender,
         options.executor,
-        ethers.toBeHex(2_000_000, 4),
+        ethers.toBeHex(options.gas ?? 2_000_000n, 4),
         '0x02', // source chain id length
         '0x01', // destination chain id length
         '0x00', // data type
