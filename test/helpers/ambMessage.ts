@@ -24,6 +24,10 @@ export const handleNativeCall = (options: { token: string; recipient: string; va
         coder.encode(['address', 'address', 'uint256', 'bytes'], [options.token, options.recipient, options.value, options.data]),
     ])
 
+/** Encodes the fee director struct the router decodes from the callback data. */
+export const feeDirector = (recipient: string, settings: bigint, limit = 0n, multiplier = 0n) =>
+    coder.encode(['address', 'uint256', 'uint256', 'uint256'], [recipient, settings, limit, multiplier])
+
 /**
  * Packs signatures in the bridge blob layout: one count byte, the v bytes, the r words, the s words.
  * The shared helpers.packSignatures cannot be used: it throws for counts below ten.

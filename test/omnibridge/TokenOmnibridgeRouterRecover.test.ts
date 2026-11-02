@@ -5,6 +5,7 @@ import * as ethers from 'ethers'
 import * as helpers from '../helpers/helpers'
 import * as setup from '../setup'
 import type { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers'
+import { feeDirector, packSignatures } from '../helpers/ambMessage'
 
 const oneEther = ethers.parseEther('1')
 const value = oneEther / 10n
@@ -12,18 +13,6 @@ const unwrapFlag = 0b0010n
 const coder = ethers.AbiCoder.defaultAbiCoder()
 /** The router's DeliveryOutcome enum, in declaration order. */
 const Outcome = { Delivered: 0n, Recovered: 1n, AlreadyHandled: 2n, AlreadyRelayedForAnotherRecipient: 3n } as const
-
-/**
- * Packs signatures in the bridge blob layout: one count byte, the v bytes, the r words, the s words.
- * The shared helpers.packSignatures cannot be used here: it hex-encodes the count with a string that
- * is not valid hexadecimal for counts below ten, so it throws for the two-signature case.
- */
-const packSignatures = (pieces: Array<{ v: string; r: string; s: string }>) =>
-    '0x' +
-    pieces.length.toString(16).padStart(2, '0') +
-    pieces.map((piece) => piece.v).join('') +
-    pieces.map((piece) => piece.r).join('') +
-    pieces.map((piece) => piece.s).join('')
 
 /**
  * The gas a mined transaction's execution used, without the intrinsic cost. The receipt alone can
@@ -39,10 +28,6 @@ const executionGas = async (transactionHash: string): Promise<bigint> => {
     const last = steps[steps.length - 1]
     return BigInt(steps[0].gas - last.gas + last.gasCost)
 }
-
-/** Encodes the fee director struct the router decodes from the callback data. */
-const feeDirector = (recipient: string, settings: bigint, limit = 0n, multiplier = 0n) =>
-    coder.encode(['address', 'uint256', 'uint256', 'uint256'], [recipient, settings, limit, multiplier])
 
 describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
     let signers!: HardhatEthersSigner[]

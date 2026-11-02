@@ -3,6 +3,7 @@ import { expect, AssertionError } from 'chai'
 import * as ethers from 'ethers'
 import * as helpers from '../helpers/helpers'
 import * as setup from '../setup'
+import { packSignatures } from '../helpers/ambMessage'
 
 /**
  * Hardening proof for the delivery router, run on an anvil node that forks a live chain.
@@ -61,7 +62,6 @@ const mediatorAbi = [
 const erc20Abi = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']
 const routerInterface = new ethers.Interface([
     'function onTokenBridged(address _token, uint256 _value, bytes _data)',
-    'function COURIER_SLOT() view returns (bytes32)',
 ])
 const mediatorInterface = new ethers.Interface(mediatorAbi)
 const bridgeInterface = new ethers.Interface(bridgeAbi)
@@ -668,13 +668,6 @@ describe('Router hardening against real strands, on an anvil fork', function () 
         let router!: any
         let messageCounter = 0
         let forked = false
-
-        const packSignatures = (pieces: Array<{ v: string; r: string; s: string }>) =>
-            '0x' +
-            pieces.length.toString(16).padStart(2, '0') +
-            pieces.map((piece) => piece.v).join('') +
-            pieces.map((piece) => piece.r).join('') +
-            pieces.map((piece) => piece.s).join('')
 
         const sign = async (message: string) => {
             const pieces = []

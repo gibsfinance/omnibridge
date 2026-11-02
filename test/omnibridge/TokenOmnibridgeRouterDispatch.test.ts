@@ -4,16 +4,12 @@ import { expect } from 'chai'
 import * as ethers from 'ethers'
 import * as helpers from '../helpers/helpers'
 import * as setup from '../setup'
-import { buildMessage, handleNativeCall, packSignatures } from '../helpers/ambMessage'
+import { buildMessage, feeDirector, handleNativeCall, packSignatures } from '../helpers/ambMessage'
 import type { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers'
 
 const oneEther = ethers.parseEther('1')
-const coder = ethers.AbiCoder.defaultAbiCoder()
 const unwrapFlag = 0b0010n
 const percentFlag = 0b1000n
-
-const feeDirector = (recipient: string, settings: bigint, limit = 0n, multiplier = 0n) =>
-    coder.encode(['address', 'uint256', 'uint256', 'uint256'], [recipient, settings, limit, multiplier])
 
 describe('TokenOmnibridgeRouter single delivery entry', () => {
     let signers!: HardhatEthersSigner[]
