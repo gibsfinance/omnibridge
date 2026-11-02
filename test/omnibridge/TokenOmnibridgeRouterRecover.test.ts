@@ -1267,6 +1267,178 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         })
     })
 
+    // Only the mediator may call onTokenBridged. The identifier read alone does not protect it: while the
+    // bridge runs ANY message its identifier is non-zero, so the target of a relayed message could name
+    // itself as the recipient of everything the router holds.
+    describe('only the mediator may call onTokenBridged', () => {
+        /** Puts `value` of the wrapped token in the router, standing in for a strand. */
+        const fundRouter = async () => {
+            await token.deposit({ value })
+            await token.transfer(router, value)
+        }
+
+        it("a stranger's direct call reverts at the caller check and takes nothing", async () => {
+            await fundRouter()
+            await expect(router.connect(stranger).onTokenBridged(token, value, feeDirector(stranger.address, 0n))).to.be.revertedWithoutReason()
+            expect(await token.balanceOf(router)).to.equal(value)
+        })
+
+        it('the target of a relayed message cannot call onTokenBridged during that message', async () => {
+            await fundRouter()
+            const attacker = await (await hre.ethers.getContractFactory('MockArmedCaller')).deploy()
+            const attackerAddress = await attacker.getAddress()
+            const routerBalance: bigint = await token.balanceOf(router)
+            await attacker.arm(router, router.interface.encodeFunctionData('onTokenBridged', [token.target, routerBalance, feeDirector(attackerAddress, 0n)]))
+
+            const attackId = nextMessageId()
+            await amb.executeMessageCall(attacker, stranger.address, attacker.interface.encodeFunctionData('fire'), attackId, 1_000_000n)
+
+            expect(await amb.messageCallStatus(attackId), 'the relayed message ran').to.equal(true)
+            expect(await attacker.callMade()).to.equal(true)
+            expect(await attacker.callSucceeded(), 'the call is refused').to.equal(false)
+            expect(await attacker.callRevertData(), 'by the caller check, which has no reason').to.equal('0x')
+            expect(await token.balanceOf(attacker)).to.equal(0n)
+            expect(await token.balanceOf(router), 'nothing taken').to.equal(routerBalance)
+            expect(await router.processed(attackId)).to.equal(false)
+        })
+    })
+
+    // onTokenBridged holds the reentrancy guard that both recovery paths also hold. A payout recipient of a
+    // fresh delivery that re-enters recover() for another strand is refused. Without the guard that recovery
+    // would still pay its own recipient in full with no tip (the tip is bound to the message, and the
+    // message is recorded before it pays), so this test pins the guard's behaviour, not a loss it prevents.
+    describe('the reentrancy guard on onTokenBridged', () => {
+        it('a payout recipient of a fresh delivery cannot re-enter recover() for another strand', async () => {
+            const hookToken = await (await hre.ethers.getContractFactory('MockTransferHookToken')).deploy()
+            const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
+            // real custody in the mediator, through an outbound transfer
+            await hookToken.mint(user, value)
+            await hookToken.connect(user).approve(mediator, value)
+            await mediator.connect(user).getFunction('relayTokens(address,uint256)')(hookToken, value)
+
+            // another user's strand of the wrapped token, which the recipient tries to recover mid-payout
+            const victim = signers[8]
+            const strandId = nextMessageId()
+            const strandCall = handleCall({ data: feeDirector(victim.address, 0n) })
+            await strand(strandId, strandCall)
+            const strandMessage = buildMessage({ messageId: strandId, executor: mediator.target as string, innerCall: strandCall })
+            await recoverer.arm(router, strandMessage, await sign(strandMessage, [validators[0], validators[1]]))
+
+            const freshId = nextMessageId()
+            const freshCall = ethers.concat([
+                mediator.interface.getFunction('handleNativeTokensAndCall')!.selector,
+                coder.encode(['address', 'address', 'uint256', 'bytes'], [hookToken.target, router.target, value, feeDirector(await recoverer.getAddress(), 0n)]),
+            ])
+            await deliver(freshId, freshCall, 3_000_000n)
+
+            expect(await router.processed(freshId)).to.equal(true)
+            expect(await hookToken.balanceOf(recoverer), 'the fresh delivery paid').to.equal(value)
+            expect(await recoverer.reentrantCallMade()).to.equal(true)
+            expect(await recoverer.reentrantCallSucceeded()).to.equal(false)
+            expect(await recoverer.reentrantCallRevertData()).to.equal(router.interface.getError('ReentrancyGuard')!.selector)
+            expect(await router.processed(strandId), 'the strand is untouched').to.equal(false)
+            expect(await token.balanceOf(router)).to.equal(value)
+        })
+    })
+
+    // A token in the mediator's escrow runs its own code while the mediator releases it to the router. At
+    // that moment the router holds the tokens but onTokenBridged has not run, and the bridge has recorded
+    // the message as relayed but not its call status. recover() must not pay from inside that window.
+    describe('recover() from a hostile escrowed token during the release', () => {
+        it('reverts MessageNotDelivered, and the delivery then pays once', async () => {
+            const armedToken = await (await hre.ethers.getContractFactory('MockArmedCallToken')).deploy()
+            await armedToken.mint(user, value)
+            await armedToken.connect(user).approve(mediator, value)
+            await mediator.connect(user).getFunction('relayTokens(address,uint256)')(armedToken, value)
+
+            const recipient = signers[7]
+            const messageId = nextMessageId()
+            const innerCall = ethers.concat([
+                mediator.interface.getFunction('handleNativeTokensAndCall')!.selector,
+                coder.encode(['address', 'address', 'uint256', 'bytes'], [armedToken.target, router.target, value, feeDirector(recipient.address, 0n)]),
+            ])
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+            // the next transfer of the token is the mediator's release to the router
+            await armedToken.arm(router, router.interface.encodeFunctionData('recover', [message, signatures]))
+
+            await deliver(messageId, innerCall, 3_000_000n)
+
+            expect(await armedToken.callMade(), 'recover() ran inside the release').to.equal(true)
+            expect(await armedToken.callSucceeded()).to.equal(false)
+            expect(await armedToken.callRevertData()).to.equal(router.interface.getError('MessageNotDelivered')!.selector)
+            expect(await amb.messageCallStatus(messageId)).to.equal(true)
+            expect(await router.processed(messageId)).to.equal(true)
+            expect(await armedToken.balanceOf(recipient), 'paid once').to.equal(value)
+            expect(await armedToken.balanceOf(router)).to.equal(0n)
+        })
+    })
+
+    // The owner can point the courier check at an outside filter. The entry then asks that filter, not the
+    // router's own list, on both its fresh and its recovery branch. A public recover() never asks.
+    describe('an outside couriers filter', () => {
+        const tip = value / 10n
+        let filter!: any
+        let filterCourier!: HardhatEthersSigner
+        let routerListCourier!: HardhatEthersSigner
+
+        beforeEach(async () => {
+            filter = await (await hre.ethers.getContractFactory('MockCourierFilter')).deploy()
+            filterCourier = signers[4]
+            routerListCourier = signers[5]
+            await filter.setCourier(filterCourier.address, true)
+            // listed on the router's own list only, so a pass would prove the filter was not asked
+            await router.connect(owner).setCourierStatus(routerListCourier.address, true)
+            await router.connect(owner).setCouriersFilter(filter)
+        })
+
+        const freshMessage = () => {
+            const messageId = nextMessageId()
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall: handleCall({ data: feeDirector(user.address, 0b0001n, tip) }) })
+            return { messageId, message }
+        }
+
+        it('a courier the filter lists earns the tip on a fresh delivery; one it does not list gets NotACourier', async () => {
+            const listed = freshMessage()
+            const userBefore = await token.balanceOf(user)
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(filterCourier.address, listed.message, '0x')
+            expect(await token.balanceOf(filterCourier)).to.equal(tip)
+            expect((await token.balanceOf(user)) - userBefore).to.equal(value - tip)
+
+            const unlisted = freshMessage()
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(routerListCourier.address, unlisted.message, '0x'))
+                .to.be.revertedWithCustomError(router, 'NotACourier')
+                .withArgs(routerListCourier.address)
+            expect(await amb.relayedMessages(unlisted.messageId)).to.equal(false)
+        })
+
+        it('a reverting filter makes the entry revert on both branches; a public recover() still pays in full', async () => {
+            await filter.setReverting(true)
+
+            const fresh = freshMessage()
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(filterCourier.address, fresh.message, '0x'))
+                .to.be.revertedWithCustomError(filter, 'FilterUnavailable')
+            expect(await amb.relayedMessages(fresh.messageId), 'the fresh message stays unrelayed').to.equal(false)
+
+            const strandId = nextMessageId()
+            const strandCall = handleCall({ data: feeDirector(user.address, 0b0001n, tip) })
+            await strand(strandId, strandCall)
+            const strandMessage = buildMessage({ messageId: strandId, executor: mediator.target as string, innerCall: strandCall })
+            const signatures = await sign(strandMessage, [validators[0], validators[1]])
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(filterCourier.address, strandMessage, signatures))
+                .to.be.revertedWithCustomError(filter, 'FilterUnavailable')
+            expect(await router.processed(strandId)).to.equal(false)
+
+            const userBefore = await token.balanceOf(user)
+            await expect(router.connect(stranger).recover(strandMessage, signatures))
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(strandId, token.target, router.target, value)
+            expect((await token.balanceOf(user)) - userBefore, 'paid in full').to.equal(value)
+            expect(await token.balanceOf(filterCourier), 'no tip').to.equal(0n)
+            expect(await token.balanceOf(router)).to.equal(0n)
+        })
+    })
+
     // Two checks that no public path can reach today. Each test proves the check still does its job,
     // so a later change that drops the check in front of it cannot go unnoticed.
     describe('defence in depth', () => {

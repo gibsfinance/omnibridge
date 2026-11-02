@@ -281,6 +281,13 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
     /**
      * @dev Bridged callback function used for unwrapping received tokens.
      * Can only be called by the associated Omnibridge contract.
+     *
+     * The reentrancy guard is the one both recovery paths hold, so a payout
+     * recipient cannot run {recover} in the middle of this delivery, and a
+     * nested delivery to this router reverts here (the mediator swallows it
+     * and it strands, recoverable). It is defence in depth: without it, the
+     * `processed` record and the message-bound tip would still stop a double
+     * payment and an unearned tip.
      * @param _token the local token the mediator just sent this router: the
      * native token itself for handleNativeTokensAndCall, or the mediator's
      * bridged token for the bridged-token callbacks. Any token is accepted;
