@@ -8,10 +8,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IBasicAMBMediator} from "../interfaces/IBasicAMBMediator.sol";
 import {IBasicForeignAMB} from "../interfaces/IBasicForeignAMB.sol";
 import {IBridgeValidators} from "../interfaces/IBridgeValidators.sol";
-import {IOmnibridge} from "../interfaces/IOmnibridge.sol";
 import {IWETH as IWNative} from "../interfaces/IWETH.sol";
 
-import {AddressHelper} from "../libraries/AddressHelper.sol";
 import {Bytes} from "../libraries/Bytes.sol";
 
 import {OwnableModule} from "../upgradeable_contracts/modules/OwnableModule.sol";
@@ -922,8 +920,7 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
         payable
         returns (DeliveryOutcome outcome)
     {
-        // Read first, so the gas-mode tip measures from the same point as before
-        // the cheap checks below were added.
+        // Read first, so the gas-mode tip counts the whole entry, checks included.
         uint256 entryGas = gasleft();
         // Parsed once; every check below and the dispatch reuse the parts.
         (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(_data);
