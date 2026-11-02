@@ -259,7 +259,6 @@ describe('TokenOmnibridgeRouter', () => {
                     ['address', 'uint256', 'uint256', 'uint256'],
                     [await user.getAddress(), 0b0110, oneEther, oneEther / 10n],
                 )
-                await stubMediator.setToken(token2)
                 const message = await wrapInMessage(data, token2)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotACourier').withArgs(v1.address)
@@ -310,7 +309,6 @@ describe('TokenOmnibridgeRouter', () => {
                     ['address', 'uint256', 'uint256', 'uint256'],
                     [await user.getAddress(), 0b1000, oneEther, oneEther / feeRatio],
                 )
-                // await stubMediator.setToken(token2)
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
                     .to.revertedWithCustomError(WETHRouter, 'NotACourier').withArgs(v1.address)

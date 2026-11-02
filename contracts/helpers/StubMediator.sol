@@ -5,8 +5,6 @@ import { IERC20Receiver } from "../interfaces/IERC20Receiver.sol";
 
 contract StubMediator {
   address public immutable WETH;
-  address public token;
-  mapping(address => bool) public validators;
   /// @dev Always false unless a test sets it, so the router takes the fresh delivery path.
   mapping(bytes32 => bool) public relayedMessages;
   /// @dev The identifier of the message being delivered, as the real bridge exposes it during delivery.
@@ -46,20 +44,8 @@ contract StubMediator {
   }
   receive() external payable {}
   fallback() external payable {}
-  function setToken(address _token) external {
-    token = _token;
-  }
   function bridgeContract() external view returns(address) {
     return address(this);
-  }
-  function validatorContract() external view returns(address) {
-    return address(this);
-  }
-  function isValidator(address _addr) external view returns(bool) {
-    return validators[_addr];
-  }
-  function setValidator(address _addr, bool _isValidator) external {
-    validators[_addr] = _isValidator;
   }
   /**
    * @dev Stands in for the bridge's delivery call. Like the real bridge it receives a full
