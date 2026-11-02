@@ -32,6 +32,9 @@ const coder = ethers.AbiCoder.defaultAbiCoder()
 // The router keeps its delivery state in this slot: keccak256(abi.encode("omnibridgerouter.runner")).
 // The value is the abi encoding of a string, not the raw bytes, so it is built the same way here.
 const RUNNER_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.runner']))
+// The entry records the identifier of the message it handles here: keccak256(abi.encode("omnibridgerouter.entryMessage")).
+// A payout earns the tip only when its own message identifier equals this word. The constructor sets it to 1 (idle).
+const ENTRY_MESSAGE_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.entryMessage']))
 // The Panic(uint256) selector followed by code 0x11, which is the checked arithmetic underflow code.
 const PANIC_UNDERFLOW_OUTPUT = '0x4e487b71' + '11'.padStart(64, '0')
 // The gas the message asks the mediator to run with. All six real strands used this limit.
@@ -284,6 +287,8 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                 let tokenContract!: ethers.Contract
                 let toNative = false
                 let oldRunnerSlotValue = 0n
+                // The identifier the stand-in bridge reports while it delivers.
+                const spoofMessageId = ethers.keccak256(ethers.toUtf8Bytes(`hardening-${realCase.id}`))
 
                 /** Drives the real mediator into a router and measures every balance that matters. */
                 const drive = async (routerAddress: string, options: { gasPrice?: bigint } = {}): Promise<Outcome> => {
@@ -376,7 +381,7 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     await rpc('anvil_setCode', [bridge, callerArtifact.deployedBytecode])
                     spoof = new ethers.Contract(bridge, callerFactory.interface, signer)
                     await (await spoof.setMessageSender(otherSide)).wait()
-                    await (await spoof.setMessageId(ethers.keccak256(ethers.toUtf8Bytes(`hardening-${realCase.id}`)))).wait()
+                    await (await spoof.setMessageId(spoofMessageId)).wait()
 
                     tokenContract = new ethers.Contract(decoded.token, erc20Abi, hre.ethers.provider)
                     toNative =
@@ -389,6 +394,8 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     newRouter = await deployed.getAddress()
                     // The slot constant must be the one the router really uses, or every state edit says nothing.
                     expect(await deployed.RUNNER_SLOT()).to.equal(RUNNER_SLOT)
+                    // The entry message slot is private; its idle value 1 from the constructor proves the slot is right.
+                    expect(BigInt(await hre.ethers.provider.getStorage(newRouter, ENTRY_MESSAGE_SLOT))).to.equal(1n)
 
                     oldRunnerSlotValue = BigInt(await hre.ethers.provider.getStorage(decoded.oldRouter, RUNNER_SLOT))
                 })
@@ -483,13 +490,23 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     const entryGas = MESSAGE_GAS
                     const runnerWord = entryGas | (BigInt(runnerAddress) << 96n)
                     const gasPrice = 30_000_000_000n
+                    // The entry also records the message it handles. Writing both words is what the entry does.
                     const outcome = await isolated(async () => {
                         await writeStorage(newRouter, RUNNER_SLOT, runnerWord)
+                        await writeStorage(newRouter, ENTRY_MESSAGE_SLOT, BigInt(spoofMessageId))
                         return drive(newRouter, { gasPrice })
                     }).finally(() =>
                         // The pinned base fee sticks to the node. Put a tiny one back so later blocks stay cheap.
                         rpc('anvil_setNextBlockBaseFeePerGas', [ethers.toBeHex(1_000n)]),
                     )
+                    // A runner word with no entry handling THIS message (the slot left idle) must earn nothing:
+                    // the tip is bound to the message, so an ambient runner never leaks into another payout.
+                    const unboundOutcome = await isolated(async () => {
+                        await writeStorage(newRouter, RUNNER_SLOT, runnerWord)
+                        return drive(newRouter, { gasPrice })
+                    }).finally(() => rpc('anvil_setNextBlockBaseFeePerGas', [ethers.toBeHex(1_000n)]))
+                    expect(unboundOutcome.runnerGain, 'no tip without the entry handling this message').to.equal(0n)
+                    expect(unboundOutcome.endRecipientGain, 'the recipient is paid in full instead').to.equal(strand.value)
                     const fee = outcome.runnerGain
                     console.log(
                         `      [#${realCase.id}] genuine runner: reverted=${outcome.callbackReverted} fee to runner=${fee} ` +
