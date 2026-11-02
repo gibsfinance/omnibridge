@@ -87,3 +87,96 @@ So after its caller check, `onTokenBridged` never reverts:
 
 `withdraw(token)` and `withdrawTo(token, to)` pay the caller's balance. The zero address as token means native coin.
 `owed[token][account]` is the balance and `totalOwed[token]` is the sum.
+
+## TokenOmnibridgeRouter: operating rules
+
+These rules are for the delivery service, relayers, and the bridge interface.
+They describe what the router on the foreign side (Ethereum, Binance Smart Chain) does today.
+
+### One entry for every delivery
+
+Call `safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures)` on the router.
+The router picks the path:
+
+* A message the bridge has not relayed yet is a fresh delivery. The router passes it to the bridge.
+  The named `runner` must be a validator, or the call reverts `RunnerNotValidator(runner)`.
+* A message the bridge already relayed, but whose tokens stranded in the router, is a recovery.
+  Anyone may name any runner. Only a runner that is a validator earns the tip.
+
+The caller does not have to be the runner. The tip goes to the runner.
+The tip is bound to the message the call handles. It is paid only on that message's own fresh delivery or recovery.
+A call to `recover(message, signatures)` never pays a tip.
+
+### Simulate first and read the outcome
+
+Relayers should simulate every call (`eth_call`) before they send it.
+Both the entry and `recover` return a `DeliveryOutcome`:
+
+* `Delivered` (0): the entry relayed a fresh message through the bridge.
+* `Recovered` (1): the message had stranded in the router and the call paid it.
+* `AlreadyHandled` (2): the router already paid this message. Another relayer won the race.
+
+Losing a race is not an error. The call returns `AlreadyHandled` at once and writes nothing.
+In the unit test fixture a losing call costs about 37,000 gas, transaction cost included.
+Before this change it reverted and cost 112,649 gas on the entry and 76,682 gas on `recover`.
+
+Every genuine fault still reverts: bad signatures, wrong executor, a message for another recipient,
+a message the bridge never relayed, a message that failed and was refunded, an unknown bridged token,
+and a runner that is not a validator on a fresh delivery.
+
+### Gas for a fresh delivery
+
+The real bridge forwards almost all the gas it has to the mediator. So on mainnet the transaction gas is the number that matters, not the gas in the message header.
+On a mainnet fork, a fresh wrapped ether delivery with an unwrap and a fixed tip needed at least 444,000 transaction gas through the entry.
+The same kind of message sent straight to the bridge needed 366,000.
+Below that the whole transaction ran out of gas and reverted. No gas level left the tokens stranded.
+Use the simulation to set the gas. Do not reuse a limit sized for a direct bridge call.
+
+### When the entry reverts `DeliveryNotCompleted`
+
+A fresh delivery to this router through the entry is all or nothing.
+When the router's callback fails, the entry reverts `DeliveryNotCompleted(messageId)`.
+The tokens stay with the mediator and the message stays unrelayed.
+
+This happens when the callback fails for a reason other than gas, for example data the router cannot read.
+The delivery service then relays the message directly on the Arbitrary Message Bridge
+(`safeExecuteSignaturesWithAutoGasLimit(message, signatures)` on the bridge, not on the router).
+The bridge records success, but the tokens strand in the router.
+Recovery fails for the same reason the callback failed, so only the owner can release them with `claimTokens`.
+
+### Combinations the interface must refuse
+
+Each of these strands the tokens in the router for good. Recovery refuses them.
+Only the owner's `claimTokens` can release them.
+
+* A message through a mediator that is not this router's own mediator.
+  The router accepts callbacks only from its mediator, and recovery reverts `WrongExecutor`.
+* A plain transfer to the router with no data (`relayTokens` instead of `relayTokensAndCall`).
+  The mediator sends the tokens but never calls the router, and recovery reverts `UnsupportedSelector`.
+* PulseChain's copy of WETH (it has the same address as WETH on Ethereum) with the 20-byte legacy data form (a bare recipient address).
+  The mediator delivers its bridged copy, not real WETH, and the legacy form only unwraps real WETH.
+  The router reverts `LegacyFormRequiresWrappedNative(token)`.
+  Use the fee director data form instead. It pays the bridged copy as a token, never as ether.
+
+### Validator rotation
+
+Recovery checks the signatures against the validator set that is live when recovery runs.
+When validators rotate, a strand signed only by validators that left can no longer be recovered.
+Only the owner's `claimTokens` can release it. Recover strands soon after they happen.
+
+### Recipients that need much gas to receive ether
+
+An unwrap pays ether with at most 50,000 gas for the recipient (plus the 2,300 stipend).
+A recipient that refuses ether, or needs more gas to receive it, gets wrapped ether instead.
+A Safe 1.3.0 wallet needs about 6,700 gas, so ordinary smart contract wallets receive ether.
+
+### Fee-on-transfer tokens
+
+The router never refuses a fee-on-transfer token (a token that takes a cut on each transfer).
+Every delivery, fresh or recovered, pays what the message names, capped at what the router holds of that token when the payment runs.
+The message is then closed.
+
+The router keeps every stranded delivery of a token in one balance.
+So a delivery whose own tokens arrived short can draw on another stranded delivery of the same token,
+and a later message can find less than it names and be paid the smaller amount.
+The owner's `claimTokens` is the rescue path. The owner uses it to make any good-faith user left short whole.

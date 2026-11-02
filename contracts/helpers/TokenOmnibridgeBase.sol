@@ -845,6 +845,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * requires that {onTokenBridged} recorded the message, and reverts
      * {DeliveryNotCompleted} otherwise: this router's own delivery is all or
      * nothing. A message for any other recipient gets only the bridge's check.
+     *
+     * A message this router has already paid returns
+     * {DeliveryOutcome.AlreadyHandled} before any storage write or external
+     * call: losing a race to another relayer is not an error. Relayers should
+     * simulate the call first and read the returned outcome.
      * @param runner the validator to attribute the tip to. Any caller may name
      * any validator; the tip goes to the runner, not to the caller. A fresh
      * delivery reverts {RunnerNotValidator} for a runner that is not a
@@ -853,6 +858,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param _signatures bytes blob with signatures to be validated
      * @notice that the sender does not matter, so this method could be called via
      * multicall for more efficient gas savings and still attribute tokens to the validator appropriately
+     * @return outcome {DeliveryOutcome.Delivered} for a fresh relay,
+     * {DeliveryOutcome.Recovered} for a finished strand, or
+     * {DeliveryOutcome.AlreadyHandled} when the router had already paid it
      */
     function safeExecuteSignaturesWithAutoGasLimit(address runner, bytes calldata _data, bytes calldata _signatures)
         external
