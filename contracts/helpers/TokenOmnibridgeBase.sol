@@ -283,7 +283,7 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      * @param _data extra data passed alongside with relayTokensAndCall
      * on the other side of the bridge. Should contain coins receiver address.
      */
-    function onTokenBridged(address _token, uint256 _value, bytes memory _data) external virtual nonReentrant {
+    function onTokenBridged(address _token, uint256 _value, bytes memory _data) external payable virtual nonReentrant {
         require(msg.sender == address(bridge));
         // Record the message that is executing now, so a later {recover} can
         // never pay this message a second time. The read is strict: a zero
@@ -864,9 +864,13 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
     /**
      * @dev Ether receive function.
      * Accepts ether only from the wNative contract, which pays this router when
-     * it unwraps. Reverts for every other sender. Apart from this, only the
-     * wrapping relay functions of the derived routers (wrapAndRelayTokens,
-     * relayTokensAndCall) accept ether, and they wrap all of it.
+     * it unwraps. Reverts for every other sender. The wrapping relay functions
+     * of the derived routers (wrapAndRelayTokens, relayTokensAndCall) wrap all
+     * the ether they receive. {onTokenBridged},
+     * {safeExecuteSignaturesWithAutoGasLimit}, {setCouriersFilter} and
+     * {setCourierStatus} are payable to save gas; ether sent to them by
+     * mistake stays in the router until the owner claims it with
+     * {claimTokens}.
      */
     receive() external payable {
         require(msg.sender == address(wNative));
@@ -915,6 +919,7 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      */
     function safeExecuteSignaturesWithAutoGasLimit(address courier, bytes calldata _data, bytes calldata _signatures)
         external
+        payable
         returns (DeliveryOutcome outcome)
     {
         // Read first, so the gas-mode tip measures from the same point as before
@@ -1048,7 +1053,7 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      * @dev Points the courier check at another {ICourierFilter}. The router
      * starts as its own filter, answering from {isCourier}.
      */
-    function setCouriersFilter(address _couriersFilter) external onlyOwner {
+    function setCouriersFilter(address _couriersFilter) external payable onlyOwner {
         // if this doesn't fail we are at least guaranteed that it has the method
         ICourierFilter(_couriersFilter).isCourier(address(0));
         couriersFilter = _couriersFilter;
@@ -1056,7 +1061,7 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
     /**
      * @dev Adds an address to, or removes it from, the router's own courier list.
      */
-    function setCourierStatus(address _courier, bool _isCourier) external onlyOwner {
+    function setCourierStatus(address _courier, bool _isCourier) external payable onlyOwner {
         isCourier[_courier] = _isCourier;
     }
 }

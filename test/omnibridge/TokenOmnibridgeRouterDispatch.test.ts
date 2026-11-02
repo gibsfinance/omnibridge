@@ -114,61 +114,68 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
         })
     })
 
-    // Nothing legitimately sends ether through these: the bridge and the mediator call without value, and
-    // the router never forwards value to the bridge. Ether sent to them would only be stuck in the router.
-    describe('refuses ether on every function that has no use for it', () => {
-        const nonPayableFunctions = ['safeExecuteSignaturesWithAutoGasLimit', 'onTokenBridged', 'setCouriersFilter', 'setCourierStatus']
+    // These are payable on purpose: skipping the call-value check saves gas on every call. Ether sent to them
+    // by mistake stays in the router, and the owner sweeps it with claimTokens(address(0), to).
+    describe('accepts ether on the payable functions, and the owner can sweep it', () => {
+        const payableFunctions = ['safeExecuteSignaturesWithAutoGasLimit', 'onTokenBridged', 'setCouriersFilter', 'setCourierStatus']
         let token!: any
         let stubMediator!: any
         let router!: any
-        let bridgeAccount!: HardhatEthersSigner
-        let routerWithAccountBridge!: any
         let courier!: HardhatEthersSigner
+        let sweepTarget!: HardhatEthersSigner
 
         const deploy = async () => {
             signers = await hre.ethers.getSigners()
-            ;[owner, , courier, , bridgeAccount] = signers
+            ;[owner, , courier, , sweepTarget] = signers
             token = await (await hre.ethers.getContractFactory('WETH')).deploy()
             stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
             router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(stubMediator, token, owner)
             await router.connect(owner).setCourierStatus(courier, true)
             await token.deposit({ value: oneEther })
             await token.transfer(router, oneEther)
-            // a router whose bridge is a plain account, so the test can call onTokenBridged as the bridge with value
-            routerWithAccountBridge = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(bridgeAccount, token, owner)
         }
         beforeEach(async () => {
             await loadFixture(deploy)
         })
 
-        it('declares each of them nonpayable in the interface', async () => {
-            for (const name of nonPayableFunctions) {
-                expect(router.interface.getFunction(name)!.stateMutability, name).to.equal('nonpayable')
+        const sweep = async (expected: bigint) => {
+            const before = await hre.ethers.provider.getBalance(sweepTarget)
+            await router.connect(owner).claimTokens(ethers.ZeroAddress, sweepTarget)
+            expect(await hre.ethers.provider.getBalance(sweepTarget)).to.equal(before + expected)
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
+        }
+
+        it('declares each of them payable in the interface', async () => {
+            for (const name of payableFunctions) {
+                expect(router.interface.getFunction(name)!.stateMutability, name).to.equal('payable')
             }
         })
 
-        it('the entry reverts when sent ether, on a message it would otherwise deliver', async () => {
+        it('the entry delivers when sent ether, and the owner sweeps the ether', async () => {
             const message = buildMessage({
                 messageId: ethers.keccak256(ethers.toUtf8Bytes('dispatch-ether')),
                 sender: stubMediator.target as string,
                 executor: stubMediator.target as string,
                 innerCall: handleNativeCall({ token: token.target as string, recipient: router.target as string, value: oneEther, data: feeDirector(owner.address, 0n) }),
             })
-            await expect(router.safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x', { value: 1n })).to.be.revertedWithoutReason()
-            expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
+            await expect(router.safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x', { value: 1n }))
+                .to.emit(token, 'Transfer').withArgs(router.target, owner.address, oneEther)
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(1n)
+            await sweep(1n)
         })
 
-        it('onTokenBridged reverts when the bridge sends ether', async () => {
-            await expect(
-                routerWithAccountBridge.connect(bridgeAccount).onTokenBridged(token, 0n, feeDirector(owner.address, 0n), { value: 1n }),
-            ).to.be.revertedWithoutReason()
-            expect(await hre.ethers.provider.getBalance(routerWithAccountBridge)).to.equal(0n)
+        it('the owner setters take effect when sent ether, and the owner sweeps the ether', async () => {
+            await router.connect(owner).setCourierStatus(sweepTarget, true, { value: 1n })
+            expect(await router.isCourier(sweepTarget)).to.equal(true)
+            await router.connect(owner).setCouriersFilter(router, { value: 2n })
+            expect(await router.couriersFilter()).to.equal(router.target)
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(3n)
+            await sweep(3n)
         })
 
-        it('the owner setters revert when sent ether', async () => {
-            await expect(router.connect(owner).setCourierStatus(courier, true, { value: 1n })).to.be.revertedWithoutReason()
-            await expect(router.connect(owner).setCouriersFilter(router, { value: 1n })).to.be.revertedWithoutReason()
-            expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
+        it('the owner setters still refuse anyone but the owner', async () => {
+            await expect(router.connect(courier).setCourierStatus(courier, true, { value: 1n })).to.be.reverted
+            await expect(router.connect(courier).setCouriersFilter(router, { value: 1n })).to.be.reverted
         })
 
         it('still accepts ether from the wrapped-coin contract only', async () => {

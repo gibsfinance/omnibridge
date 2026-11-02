@@ -234,8 +234,9 @@ and recovers it through the entry, and the courier earns the tip.
 
 ### Ether sent to the router
 
-The router accepts ether only from the wrapped-coin contract (when it unwraps) and through `wrapAndRelayTokens` and `relayTokensAndCall` on the router, which wrap it and send it to the other chain.
-The entry, `onTokenBridged`, and the owner setters revert when sent ether.
+A plain ether transfer to the router succeeds only from the wrapped-coin contract (when it unwraps).
+`wrapAndRelayTokens` and `relayTokensAndCall` wrap the ether they receive and send it to the other chain.
+The entry, `onTokenBridged`, and the owner setters are payable to save gas. Ether sent to them by mistake stays in the router until the owner claims it with `claimTokens(address(0), to)`.
 
 ### Recipients that need much gas to receive ether
 
