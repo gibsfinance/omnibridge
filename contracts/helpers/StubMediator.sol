@@ -11,11 +11,33 @@ contract StubMediator {
   mapping(bytes32 => bool) public relayedMessages;
   /// @dev The identifier of the message being delivered, as the real bridge exposes it during delivery.
   bytes32 public messageId;
+  /// @dev How many calls {exec} has made. Each call gets its own identifier from it.
+  uint256 public execCount;
   constructor(address _weth) {
     WETH = _weth;
   }
+  /**
+   * @dev Calls `to` with `b` the way the live bridge runs a message: while the call runs,
+   * messageId() returns a real, non-zero identifier, a fresh one for every call.
+   * @param to the contract to call
+   * @param b the calldata
+   */
   function exec(address to, bytes calldata b) external {
+    execCount += 1;
+    execWithMessageId(to, b, keccak256(abi.encode("StubMediator.exec", execCount)));
+  }
+  /**
+   * @dev Calls `to` with `b` while messageId() returns `identifier`, then clears it. A test passes
+   * zero here to stand in for a bridge that reports no executing message, which the live bridge
+   * never does during a callback. Bubbles up the callee's revert data.
+   * @param to the contract to call
+   * @param b the calldata
+   * @param identifier the message identifier to report during the call
+   */
+  function execWithMessageId(address to, bytes calldata b, bytes32 identifier) public {
+    messageId = identifier;
     (bool success, bytes memory res) = to.call(b);
+    messageId = bytes32(0);
     if (success) return;
     if (res.length == 0) revert();
     assembly {

@@ -67,6 +67,30 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             expect(await token.balanceOf(runner)).to.equal(runnerBefore + fee)
             expect(await token.balanceOf(router)).to.equal(0n)
         })
+
+        // The live bridge always reports the executing message during a callback. A delivery that reads
+        // a zero identifier would record nothing and still pay, so a later recovery could pay it again.
+        describe('the executing message identifier', () => {
+            const callback = () => router.interface.encodeFunctionData('onTokenBridged', [token.target, oneEther, feeDirector(user.address, 0n)])
+
+            it('a delivery that reads a zero identifier reverts and pays nothing', async () => {
+                const attempt = stubMediator.execWithMessageId(router, callback(), ethers.ZeroHash)
+                await expect(attempt).to.be.reverted
+                const revertData = await stubMediator.execWithMessageId
+                    .staticCall(router, callback(), ethers.ZeroHash)
+                    .then(() => '0x', (error: any) => error.data as string)
+                expect(revertData, 'the router names the missing identifier').to.equal(ethers.id('ExecutingMessageIdentifierMissing()').slice(0, 10))
+                expect(await token.balanceOf(user)).to.equal(0n)
+                expect(await token.balanceOf(router)).to.equal(oneEther)
+            })
+
+            it('a delivery records the identifier the bridge reports', async () => {
+                const messageId = ethers.keccak256(ethers.toUtf8Bytes('dispatch-identifier'))
+                await stubMediator.execWithMessageId(router, callback(), messageId)
+                expect(await router.processed(messageId)).to.equal(true)
+                expect(await token.balanceOf(user)).to.equal(oneEther)
+            })
+        })
     })
 
     // Nothing legitimately sends ether through these: the bridge and the mediator call without value, and

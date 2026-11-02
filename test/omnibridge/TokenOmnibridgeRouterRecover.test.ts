@@ -151,11 +151,15 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
     }
 
     describe('wrapped token fallback in onTokenBridged', () => {
-        let stubMediator!: HardhatEthersSigner
+        let stubMediator!: any
         let stubRouter!: any
 
+        /** Delivers through the stub bridge, which reports a real message identifier like the live bridge. */
+        const deliverThroughStub = (recipient: string) =>
+            stubMediator.exec(stubRouter, stubRouter.interface.encodeFunctionData('onTokenBridged', [token.target, value, feeDirector(recipient, unwrapFlag)]))
+
         beforeEach(async () => {
-            stubMediator = signers[5]
+            stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
             stubRouter = await factoryForRouter.deploy(stubMediator, token, owner)
             await token.deposit({ value })
             await token.transfer(stubRouter, value)
@@ -166,9 +170,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const refuser = await Refuser.deploy() // refuses native coin by default
             const nativeBefore = await hre.ethers.provider.getBalance(refuser)
             const wrappedBefore = await token.balanceOf(refuser)
-            await expect(
-                stubRouter.connect(stubMediator).onTokenBridged(token, value, feeDirector(await refuser.getAddress(), unwrapFlag)),
-            ).to.not.be.reverted
+            await expect(deliverThroughStub(await refuser.getAddress())).to.not.be.reverted
             expect(await token.balanceOf(refuser)).to.equal(wrappedBefore + value)
             expect(await hre.ethers.provider.getBalance(refuser)).to.equal(nativeBefore)
             expect(await token.balanceOf(stubRouter)).to.equal(0n)
@@ -179,7 +181,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const Accepter = await hre.ethers.getContractFactory('MockPayoutReceiver')
             const accepter = await Accepter.deploy()
             await accepter.setAccepting(true)
-            await stubRouter.connect(stubMediator).onTokenBridged(token, value, feeDirector(await accepter.getAddress(), unwrapFlag))
+            await deliverThroughStub(await accepter.getAddress())
             expect(await hre.ethers.provider.getBalance(accepter)).to.equal(value)
             expect(await token.balanceOf(accepter)).to.equal(0n)
         })

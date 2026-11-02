@@ -77,17 +77,20 @@ describe('TokenOmnibridgeRouter', () => {
     })
 
     it('onTokenBridged', async () => {
-        const stubMediator = signers[2]
+        // the stub bridge reports a real message identifier during each call, like the live bridge
+        const stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
         const WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner)
+        const callback = (callbackToken: ethers.AddressLike, data: string) =>
+            WETHRouter.interface.encodeFunctionData('onTokenBridged', [callbackToken, value, data])
         const value = oneEther / 100n
         await token.deposit({ value: value })
         await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
         const balanceBefore = await hre.ethers.provider.getBalance(user)
         // the "token" is an account with no code, so reading its balance fails before any other check
-        await expect(WETHRouter.connect(stubMediator).onTokenBridged(owner, value, await user.getAddress())).to.be.revertedWithoutReason()
-        await expect(WETHRouter.connect(stubMediator).onTokenBridged(token, value, '0x')).to.be.rejected
+        await expect(stubMediator.exec(WETHRouter, callback(await owner.getAddress(), await user.getAddress()))).to.be.revertedWithoutReason()
+        await expect(stubMediator.exec(WETHRouter, callback(await token.getAddress(), '0x'))).to.be.rejected
         await expect(WETHRouter.connect(owner).onTokenBridged(token, value, await user.getAddress())).to.be.rejected
-        await expect(WETHRouter.connect(stubMediator).onTokenBridged(token, value, await user.getAddress())).to.be.fulfilled
+        await expect(stubMediator.exec(WETHRouter, callback(await token.getAddress(), await user.getAddress()))).to.be.fulfilled
         const balanceAfter = await hre.ethers.provider.getBalance(user)
         expect(balanceAfter).to.be.equal(balanceBefore + value)
     })
@@ -108,10 +111,10 @@ describe('TokenOmnibridgeRouter', () => {
 
         describe('err conditions', () => {
             let WETHRouter!: TokenOmnibridgeRouter
-            let stubMediator!: HardhatEthersSigner
+            let stubMediator!: StubMediator
 
             beforeEach(async () => {
-                stubMediator = signers[2]
+                stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
                 WETHRouter = await TokenOmnibridgeRouter.deploy(stubMediator, token, owner)
                 await token.deposit({ value })
                 await expect(token.transfer(WETHRouter, value)).to.be.fulfilled
@@ -123,7 +126,9 @@ describe('TokenOmnibridgeRouter', () => {
                     ['uint256'],
                     [1n],
                 )
-                await expect(WETHRouter.connect(stubMediator).onTokenBridged(token, value, badData)).to.be.rejected
+                await expect(
+                    stubMediator.exec(WETHRouter, WETHRouter.interface.encodeFunctionData('onTokenBridged', [await token.getAddress(), value, badData])),
+                ).to.be.rejected
             })
         })
 

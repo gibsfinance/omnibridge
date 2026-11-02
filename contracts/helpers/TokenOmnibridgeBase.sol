@@ -125,6 +125,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param token the local token the delivery carries
      */
     error LegacyFormRequiresWrappedNative(address token);
+    /**
+     * @dev {onTokenBridged} ran while the bridge reported no executing message
+     * (a zero identifier). The live bridge always sets the identifier before it
+     * calls the mediator, so this never happens on a real delivery. Paying here
+     * would record nothing, and a later {recover} could pay the message again.
+     */
+    error ExecutingMessageIdentifierMissing();
 
     /**
      * @dev What a call to the single entry or to {recover} did. A relayer that
@@ -257,11 +264,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     function onTokenBridged(address _token, uint256 _value, bytes memory _data) external virtual nonReentrant {
         require(msg.sender == address(bridge));
         // Record the message that is executing now, so a later {recover} can
-        // never pay this message a second time. The read is tolerant: a bridge
-        // that does not expose the identifier (only reachable in tests) reads as
-        // zero and records nothing, while the live bridge always returns the
-        // executing identifier, so a real delivery is always recorded. A delivery
-        // that later reverts unwinds this write along with everything else.
+        // never pay this message a second time. The read is strict: a zero
+        // identifier reverts {ExecutingMessageIdentifierMissing} rather than pay
+        // without a record. A delivery that later reverts unwinds this write
+        // along with everything else.
         bytes32 messageIdentifier = _currentMessageId();
         _markProcessed(messageIdentifier);
         _distributeDelivery(_token, _payableAmount(_token, _value), _data, messageIdentifier);
@@ -592,42 +598,28 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     /**
      * @dev Marks a message paid so it can never be paid again. The one place
      * `processed` is written: {onTokenBridged} feeds it the live identifier read
-     * from the bridge, {_recover} feeds it the identifier parsed from the signed
-     * message. A zero identifier (only a bridge stand-in in tests) records
-     * nothing.
+     * from the bridge (never zero, see {_currentMessageId}), {_recover} feeds it
+     * the identifier parsed from the signed message. Every identifier is
+     * recorded, zero included, so no message can be paid twice.
      */
     function _markProcessed(bytes32 messageIdentifier) internal {
-        if (messageIdentifier != bytes32(0)) {
-            processed[messageIdentifier] = true;
-        }
+        processed[messageIdentifier] = true;
     }
 
     /**
      * @dev Reads the identifier of the message that is executing right now from
      * this router's mediator's Arbitrary Message Bridge.
      *
-     * The read is deliberately tolerant. A bridge that does not expose the
-     * identifier (only a test stand-in) returns empty data, which reads as zero,
-     * and {_markProcessed} then records nothing. The live bridge always sets the
-     * identifier before it calls the mediator, and the mediator reads it itself
-     * during the callback, so a real delivery always has a non-zero identifier.
+     * The read is strict. The live bridge always sets the identifier before it
+     * calls the mediator, and the mediator reads it itself during the callback,
+     * so a real delivery always has a non-zero identifier. A zero identifier
+     * reverts {ExecutingMessageIdentifierMissing}, and a bridge that cannot
+     * answer at all makes the call revert.
+     * @return messageIdentifier the identifier of the executing message, never zero
      */
-    function _currentMessageId() internal view returns (bytes32) {
-        (bool bridgeFound, bytes memory bridgeReturn) =
-            address(bridge).staticcall(abi.encodeWithSelector(IBasicAMBMediator.bridgeContract.selector));
-        if (!bridgeFound || bridgeReturn.length < 32) {
-            return bytes32(0);
-        }
-        address arbitraryMessageBridge = abi.decode(bridgeReturn, (address));
-        if (arbitraryMessageBridge == address(0)) {
-            return bytes32(0);
-        }
-        (bool idFound, bytes memory idReturn) =
-            arbitraryMessageBridge.staticcall(abi.encodeWithSelector(IForeignArbitraryMessageBridge.messageId.selector));
-        if (!idFound || idReturn.length < 32) {
-            return bytes32(0);
-        }
-        return abi.decode(idReturn, (bytes32));
+    function _currentMessageId() internal view returns (bytes32 messageIdentifier) {
+        messageIdentifier = _arbitraryMessageBridge().messageId();
+        if (messageIdentifier == bytes32(0)) revert ExecutingMessageIdentifierMissing();
     }
 
     /**
