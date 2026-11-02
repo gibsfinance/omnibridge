@@ -133,11 +133,16 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @custom:value Recovered the message had stranded in this router and was paid now
      * @custom:value AlreadyHandled this router had already paid the message (another
      * caller won the race); the call returned at once and changed nothing
+     * @custom:value AlreadyRelayedForAnotherRecipient the bridge had already relayed
+     * the message, and the message does not deliver to this router, so this router
+     * can never pay it; the entry returned at once and changed nothing. Only the
+     * single entry returns it; {recover} reverts for such a message instead
      */
     enum DeliveryOutcome {
         Delivered,
         Recovered,
-        AlreadyHandled
+        AlreadyHandled,
+        AlreadyRelayedForAnotherRecipient
     }
 
     /**
@@ -416,8 +421,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @return validatorContract the bridge's validator set, for the signature check
      */
     function _requireDeliveredByBridge(bytes32 messageIdentifier) internal view returns (address validatorContract) {
-        IForeignArbitraryMessageBridge arbitraryMessageBridge =
-            IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
+        IForeignArbitraryMessageBridge arbitraryMessageBridge = _arbitraryMessageBridge();
         // relayedMessages is set before the recipient call, so it alone does not
         // prove the tokens arrived. messageCallStatus is the mediator's own call
         // result: true for a stranded delivery (the mediator swallows the failed
@@ -427,6 +431,14 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (!arbitraryMessageBridge.relayedMessages(messageIdentifier)) revert MessageNotRelayed();
         if (!arbitraryMessageBridge.messageCallStatus(messageIdentifier)) revert MessageNotDelivered();
         return arbitraryMessageBridge.validatorContract();
+    }
+
+    /**
+     * @dev The Arbitrary Message Bridge that this router's mediator trusts: the
+     * one that relays every message this router can be paid for.
+     */
+    function _arbitraryMessageBridge() internal view returns (IForeignArbitraryMessageBridge) {
+        return IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
     }
 
     /**
@@ -875,7 +887,24 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         if (_isAlreadyProcessed(_data)) {
             return DeliveryOutcome.AlreadyHandled;
         }
-        return _runAttributedEntry(runner, entryGas, _data, _signatures);
+        bool deliversToThisRouter = _messageDeliversToThisRouter(_data);
+        // `processed` is written only for messages to this router, so a race lost
+        // on a message for someone else is caught here instead: one bridge read,
+        // still before the runner slot write and the signature check.
+        if (!deliversToThisRouter && _isRelayedByBridge(_data)) {
+            return DeliveryOutcome.AlreadyRelayedForAnotherRecipient;
+        }
+        return _runAttributedEntry(runner, entryGas, deliversToThisRouter, _data, _signatures);
+    }
+
+    /**
+     * @dev Whether the bridge has already relayed the message. Reads one flag
+     * from the bridge and writes nothing.
+     * @param message the Arbitrary Message Bridge message, exactly as signed
+     */
+    function _isRelayedByBridge(bytes calldata message) internal view returns (bool) {
+        (bytes32 messageIdentifier,,) = _parseMessage(message);
+        return _arbitraryMessageBridge().relayedMessages(messageIdentifier);
     }
 
     /**
@@ -886,18 +915,26 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param runner the address the caller names to earn the tip
      * @param entryGas the gas left when the entry started, which the gas-mode
      * tip measures from
+     * @param deliversToThisRouter whether the message delivers to this router
+     * (see {_messageDeliversToThisRouter})
      * @param _data the signed message
      * @param _signatures the validator signatures over the message
      * @return outcome what the dispatch did
      */
-    function _runAttributedEntry(address runner, uint256 entryGas, bytes calldata _data, bytes calldata _signatures)
+    function _runAttributedEntry(
+        address runner,
+        uint256 entryGas,
+        bool deliversToThisRouter,
+        bytes calldata _data,
+        bytes calldata _signatures
+    )
         internal
         nonReentrantUint256(RUNNER_SLOT, uint256(uint96(entryGas)) | (uint256(uint160(runner)) << 96))
         returns (DeliveryOutcome outcome)
     {
         (bytes32 messageIdentifier,,) = _parseMessage(_data);
         StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = messageIdentifier;
-        outcome = _dispatchEntryMessage(runner, messageIdentifier, _data, _signatures);
+        outcome = _dispatchEntryMessage(runner, messageIdentifier, deliversToThisRouter, _data, _signatures);
         StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = _IDLE_ENTRY_MESSAGE;
     }
 
@@ -906,6 +943,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * slot and records `messageIdentifier` as the message it is handling.
      * @param runner the address the caller names to earn the tip
      * @param messageIdentifier the identifier parsed from `_data`
+     * @param deliversToThisRouter whether the message delivers to this router.
+     * The entry has already returned for a relayed message for which this is
+     * false, so a relayed message here always names this router.
      * @param _data the signed message
      * @param _signatures the validator signatures over the message
      * @return outcome {DeliveryOutcome.Delivered} for a fresh relay, otherwise
@@ -914,6 +954,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     function _dispatchEntryMessage(
         address runner,
         bytes32 messageIdentifier,
+        bool deliversToThisRouter,
         bytes calldata _data,
         bytes calldata _signatures
     ) internal returns (DeliveryOutcome outcome) {
@@ -934,8 +975,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         //     fee), and the message runs through the bridge, which calls back
         //     into {onTokenBridged}; that payout earns the tip because its live
         //     identifier is the one the entry recorded.
-        IForeignArbitraryMessageBridge arbitraryMessageBridge =
-            IForeignArbitraryMessageBridge(address(IBasicAMBMediator(bridge).bridgeContract()));
+        IForeignArbitraryMessageBridge arbitraryMessageBridge = _arbitraryMessageBridge();
         bool runnerIsValidator = IBridgeValidators(validatorsFilter).isValidator(runner);
         if (arbitraryMessageBridge.relayedMessages(messageIdentifier)) {
             // Recovery is permissionless, but the tip is earned only by a known
@@ -952,7 +992,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             revert RunnerNotValidator(runner);
         }
         IBasicForeignAMB(address(arbitraryMessageBridge)).safeExecuteSignaturesWithAutoGasLimit(_data, _signatures);
-        if (_messageDeliversToThisRouter(_data) && !processed[messageIdentifier]) {
+        if (deliversToThisRouter && !processed[messageIdentifier]) {
             revert DeliveryNotCompleted(messageIdentifier);
         }
         return DeliveryOutcome.Delivered;
