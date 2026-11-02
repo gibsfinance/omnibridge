@@ -25,6 +25,13 @@ const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
 const BRIDGED_PULSECHAIN_WETH = '0xb1A7F8b3AdA1Cbd7752c1306725b07D2F8B4e726'
 // The storage slot of AMBMock.validatorContract. Checked by reading it back after the write.
 const AMB_MOCK_VALIDATOR_CONTRACT_SLOT = 10
+// The real bridge is an eternal storage proxy: addressStorage is mapping slot 2, and the validator
+// contract lives at addressStorage[keccak256("validatorContract")]. Checked by reading it back.
+const ETERNAL_ADDRESS_STORAGE_MAPPING_SLOT = 2n
+// The home mediator on PulseChain: the sender of every real message to MEDIATOR.
+const HOME_MEDIATOR = '0x4fD0aaa7506f3d9cB8274bdB946Ec42A1b8751Ef'
+// The real message identifier layout: version 0x00050000, this bridge's identifier, then an 8-byte nonce.
+const REAL_MESSAGE_ID_PREFIX = '0x00050000eb21bb7b72d1042c471c6a52c971da8152d66d7a'
 
 const coder = ethers.AbiCoder.defaultAbiCoder()
 const unwrapFlag = 0b0010n
@@ -380,6 +387,190 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             const victimMessage = await signed(victimId, victimCall)
             await (await router.recover(victimMessage.message, victimMessage.signatures)).wait()
             expect(await weth.balanceOf(victim)).to.equal(value)
+            expect(await weth.balanceOf(router)).to.equal(0n)
+        })
+    })
+
+    // Fix 5's all-or-nothing check against the REAL bridge code. The mock bridge runs the message with
+    // the gas named in its header, but the real bridge's safeExecuteSignaturesWithAutoGasLimit forwards
+    // all remaining gas, so on mainnet the variable that matters is the transaction gas. Nothing here
+    // replaces code: the only state override is one storage word, pointing the real bridge at a
+    // validator set this test controls, so it can sign fresh messages. Every message copies the real
+    // header layout (version, bridge identifier, home mediator sender, chain ids 369 to 1).
+    describe('H: real bridge code, varying transaction gas: a delivery through the entry never strands', () => {
+        let forked = false
+        let router: any
+        let validator!: ethers.HDNodeWallet
+        let caller!: ethers.Signer
+        let weth: any
+        let realBridge: any
+        let nonce = 0n
+        const value = ethers.parseEther('0.01')
+        const tip = value / 10n
+        const runner = ethers.getAddress('0x' + 'cd'.repeat(20))
+
+        before(async function () {
+            const failure = await forkEthereum(BLOCK)
+            if (failure) {
+                await skipForkFailure(failure)
+                return this.skip()
+            }
+            forked = true
+            const [owner, second] = await hre.ethers.getSigners()
+            caller = second
+            weth = new ethers.Contract(WETH, erc20Abi, hre.ethers.provider)
+            realBridge = new ethers.Contract(
+                BRIDGE,
+                [...bridgeAbi, 'function implementation() view returns (address)'],
+                second,
+            )
+            const codeHashBefore = ethers.keccak256(await hre.ethers.provider.getCode(BRIDGE))
+            const implementationBefore: string = await realBridge.implementation()
+
+            validator = ethers.Wallet.createRandom()
+            const bridgeValidators = await (await hre.ethers.getContractFactory('BridgeValidators')).deploy()
+            await bridgeValidators.initialize(1, [validator.address], owner)
+            const validatorSlot = ethers.keccak256(
+                coder.encode(['bytes32', 'uint256'], [ethers.id('validatorContract'), ETERNAL_ADDRESS_STORAGE_MAPPING_SLOT]),
+            )
+            // the slot really is the live validator contract before the write
+            expect(ethers.getAddress(ethers.dataSlice(await hre.ethers.provider.getStorage(BRIDGE, validatorSlot), 12))).to.equal(
+                await realBridge.validatorContract(),
+            )
+            await hre.network.provider.send('hardhat_setStorageAt', [
+                BRIDGE,
+                validatorSlot,
+                ethers.zeroPadValue(await bridgeValidators.getAddress(), 32),
+            ])
+            expect(await realBridge.validatorContract()).to.equal(await bridgeValidators.getAddress())
+            // the real bridge code and implementation are untouched
+            expect(ethers.keccak256(await hre.ethers.provider.getCode(BRIDGE))).to.equal(codeHashBefore)
+            expect(await realBridge.implementation()).to.equal(implementationBefore)
+
+            router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(MEDIATOR, WETH, owner)
+            await router.setValidatorStatus(runner, true)
+        })
+
+        /** A fresh, signed message in the real layout: WETH out of custody to the router, a fixed tip, unwrap to ether. */
+        const freshSignedMessage = async (recipient: string) => {
+            nonce += 1n
+            const messageId = ethers.concat([REAL_MESSAGE_ID_PREFIX, ethers.toBeHex(0xffff0000n + nonce, 8)])
+            const data = coder.encode(['address', 'uint256', 'uint256', 'uint256'], [recipient, unwrapFlag | 0b0001n, tip, 0n])
+            const innerCall = new ethers.Interface(mediatorAbi).encodeFunctionData('handleNativeTokensAndCall', [WETH, router.target, value, data])
+            const message = buildMessage({ messageId, sender: HOME_MEDIATOR, executor: MEDIATOR, innerCall, gas: 2_000_000n })
+            const signature = helpers.signatureToVRS(await validator.signMessage(ethers.getBytes(message)))
+            return { messageId, message, signatures: packSignatures([signature]) }
+        }
+
+        const errorName = (error: any) => {
+            const data = error?.data ?? error?.error?.data
+            if (!data || data === '0x') return 'no revert data (out of gas)'
+            return router.interface.parseError(data)?.name ?? `other ${String(data).slice(0, 10)}`
+        }
+
+        it('ample gas: the real bridge delivers through the entry, the recipient and the runner are paid', async function () {
+            if (!forked) return this.skip()
+            const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
+            const snapshot = await takeSnapshot()
+            const recipient = ethers.Wallet.createRandom().address
+            const { messageId, message, signatures } = await freshSignedMessage(recipient)
+            expect(await realBridge.relayedMessages(messageId)).to.equal(false)
+            expect(await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, signatures, { gasLimit: 2_000_000n })).to.equal(0n)
+            await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures, { gasLimit: 2_000_000n })).wait()
+            expect(await realBridge.relayedMessages(messageId)).to.equal(true)
+            expect(await realBridge.messageCallStatus(messageId)).to.equal(true)
+            expect(await router.processed(messageId)).to.equal(true)
+            expect(await hre.ethers.provider.getBalance(recipient)).to.equal(value - tip)
+            expect(await hre.ethers.provider.getBalance(runner)).to.equal(tip)
+            expect(await weth.balanceOf(router)).to.equal(0n)
+            await snapshot.restore()
+        })
+
+        it('no transaction gas strands a delivery through the entry, and the bare real bridge strands at none either', async function () {
+            if (!forked) return this.skip()
+            const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
+            const throughEntry = { delivered: 0, stranded: 0, smallestDeliveringGas: 0n, reverts: {} as Record<string, number> }
+            const directOnBridge = { delivered: 0, stranded: 0, reverted: 0, smallestDeliveringGas: 0n }
+            for (let gasLimit = 150_000n; gasLimit <= 800_000n; gasLimit += 6_000n) {
+                // through the router's entry
+                {
+                    const snapshot = await takeSnapshot()
+                    const recipient = ethers.Wallet.createRandom().address
+                    const { message, signatures } = await freshSignedMessage(recipient)
+                    const dryRun = await router
+                        .connect(caller)
+                        .safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, signatures, { gasLimit })
+                        .then(() => 'ok', errorName)
+                    if (dryRun !== 'ok') throughEntry.reverts[dryRun] = (throughEntry.reverts[dryRun] ?? 0) + 1
+                    if (dryRun === 'ok') {
+                        await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures, { gasLimit })).wait()
+                        const paid = (await hre.ethers.provider.getBalance(recipient)) === value - tip
+                        const routerEmpty = (await weth.balanceOf(router)) === 0n
+                        if (paid && routerEmpty) throughEntry.delivered++
+                        if (paid && routerEmpty && throughEntry.smallestDeliveringGas === 0n) throughEntry.smallestDeliveringGas = gasLimit
+                        if (!(paid && routerEmpty)) throughEntry.stranded++
+                    }
+                    await snapshot.restore()
+                }
+                // the same kind of message straight on the bridge, with no router check around it
+                {
+                    const snapshot = await takeSnapshot()
+                    const recipient = ethers.Wallet.createRandom().address
+                    const { message, signatures } = await freshSignedMessage(recipient)
+                    const dryRun = await realBridge['safeExecuteSignaturesWithAutoGasLimit(bytes,bytes)']
+                        .staticCall(message, signatures, { gasLimit })
+                        .then(() => 'ok', () => 'reverted')
+                    if (dryRun === 'reverted') directOnBridge.reverted++
+                    if (dryRun === 'ok') {
+                        await (await realBridge['safeExecuteSignaturesWithAutoGasLimit(bytes,bytes)'](message, signatures, { gasLimit })).wait()
+                        const stranded = (await weth.balanceOf(router)) === value
+                        if (stranded) directOnBridge.stranded++
+                        if (!stranded) directOnBridge.delivered++
+                        if (!stranded && directOnBridge.smallestDeliveringGas === 0n) directOnBridge.smallestDeliveringGas = gasLimit
+                    }
+                    await snapshot.restore()
+                }
+            }
+            console.log(`      through the entry: ${JSON.stringify(throughEntry, (_key, item) => (typeof item === 'bigint' ? item.toString() : item))}`)
+            console.log(`      straight on the bridge: ${JSON.stringify(directOnBridge, (_key, item) => (typeof item === 'bigint' ? item.toString() : item))}`)
+            expect(throughEntry.stranded, 'no transaction gas strands a delivery through the entry').to.equal(0)
+            expect(throughEntry.delivered, 'ample transaction gas delivers').to.be.greaterThan(0)
+            // Recorded, not required by the router: the real bridge forwards almost all gas, so when the router
+            // callback runs out, the bridge's own work after the call runs out too and the transaction reverts.
+            expect(directOnBridge.stranded, 'the bare real bridge strands at no gas level for this callback').to.equal(0)
+        })
+
+        it('a callback that fails for a reason other than gas: the bare real bridge strands it, the entry reverts DeliveryNotCompleted', async function () {
+            if (!forked) return this.skip()
+            const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
+            // 64 bytes is neither the 20-byte legacy form nor a fee director: onTokenBridged reverts while decoding
+            const malformedMessage = async () => {
+                nonce += 1n
+                const messageId = ethers.concat([REAL_MESSAGE_ID_PREFIX, ethers.toBeHex(0xffff0000n + nonce, 8)])
+                const innerCall = new ethers.Interface(mediatorAbi).encodeFunctionData('handleNativeTokensAndCall', [
+                    WETH,
+                    router.target,
+                    value,
+                    ethers.hexlify(ethers.randomBytes(64)),
+                ])
+                const message = buildMessage({ messageId, sender: HOME_MEDIATOR, executor: MEDIATOR, innerCall, gas: 2_000_000n })
+                const signature = helpers.signatureToVRS(await validator.signMessage(ethers.getBytes(message)))
+                return { messageId, message, signatures: packSignatures([signature]) }
+            }
+
+            const direct = await malformedMessage()
+            const snapshot = await takeSnapshot()
+            await (await realBridge['safeExecuteSignaturesWithAutoGasLimit(bytes,bytes)'](direct.message, direct.signatures, { gasLimit: 2_000_000n })).wait()
+            expect(await realBridge.messageCallStatus(direct.messageId), 'the real bridge records success').to.equal(true)
+            expect(await weth.balanceOf(router), 'and the tokens are stranded in the router').to.equal(value)
+            expect(await router.processed(direct.messageId)).to.equal(false)
+            await snapshot.restore()
+
+            const throughEntry = await malformedMessage()
+            await expect(router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, throughEntry.message, throughEntry.signatures, { gasLimit: 2_000_000n }))
+                .to.be.revertedWithCustomError(router, 'DeliveryNotCompleted')
+                .withArgs(throughEntry.messageId)
+            expect(await realBridge.relayedMessages(throughEntry.messageId), 'the message stays unrelayed, so it can be retried').to.equal(false)
             expect(await weth.balanceOf(router)).to.equal(0n)
         })
     })
