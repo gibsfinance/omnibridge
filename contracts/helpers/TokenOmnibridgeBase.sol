@@ -38,7 +38,7 @@ interface IForeignArbitraryMessageBridge {
 /**
  * @dev Answers whether an address is a courier: an address the owner allows to
  * be named on {TokenOmnibridgeBase.safeExecuteSignaturesWithAutoGasLimit} and
- * earn the delivery tip. Couriers are not the bridge's validators. The router
+ * earn the delivery tip. Couriers need not be the bridge's validators. The router
  * implements this itself with its own owner-set list, and is its own filter
  * until the owner points {TokenOmnibridgeBase.setCouriersFilter} elsewhere.
  */
@@ -308,9 +308,12 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      * {onTokenBridged} and {_recover}. The delivery tip is paid only to the
      * courier {_courierEarningTipFor} returns for `messageIdentifier`: the entry
      * must be handling this very message with a courier attributed. So a
-     * stranded delivery finished through the single entry pays the courier the
-     * same tip a fresh delivery would, which gives a relayer a reason to finish
-     * a strand. A public {recover} call, a recovery that names a non-courier (whose courier
+     * stranded delivery finished through the single entry pays the courier a
+     * tip by the same fee director rules as a fresh delivery, which gives a
+     * relayer a reason to finish a strand. In fixed and share modes the tip is
+     * the same amount a fresh delivery pays; in gas mode it follows the gas the
+     * recovery measured, which differs from what a fresh delivery measures.
+     * A public {recover} call, a recovery that names a non-courier (whose courier
      * address the entry cleared), or the payout of any other message that runs
      * while the entry is busy pays the recipient in full.
      * @param token the local token to pay out
@@ -737,7 +740,11 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      * @dev Whether a message delivers tokens to this router through this
      * router's own mediator, using a callback this router handles. Calldata
      * only: `bridge` is immutable, so this makes no storage read and no
-     * external call. Never reverts for a message that is for someone else.
+     * external call. Returns false without reverting when the executor is not
+     * this router's mediator, the call is shorter than a selector, or the
+     * selector is not one this router delivers. When the executor is this
+     * router's mediator and the selector is supported, it decodes the
+     * arguments and reverts if they do not decode.
      * The single entry's answer to "is this message for us?".
      * @param executor the executor parsed from the message
      * @param innerCall the mediator callback parsed from the message
@@ -906,8 +913,10 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      *   - A message that does not deliver to this router is never answered
      *     from `processed`, which records only this router's own payments. If
      *     the bridge already relayed it, the entry returns
-     *     {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} after one bridge
-     *     read and before any storage write: this router can never pay it.
+     *     {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} after two
+     *     external calls (the mediator's `bridgeContract()`, then the bridge's
+     *     `relayedMessages()`) and before any storage write: this router can
+     *     never pay it.
      *   - Anything else runs: a fresh relay, or the recovery of a strand.
      *
      * Relayers should simulate the call first and read the returned outcome.
@@ -942,8 +951,9 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
             return DeliveryOutcome.AlreadyHandled;
         }
         // Not for us: `processed` says nothing about this message, so the bridge
-        // answers instead. One bridge read, still before the courier slot write
-        // and the signature check.
+        // answers instead. Two external calls (the mediator's bridgeContract(),
+        // then the bridge's relayedMessages()), still before the courier slot
+        // write and the signature check.
         if (!deliversToThisRouter && _arbitraryMessageBridge().relayedMessages(messageIdentifier)) {
             return DeliveryOutcome.AlreadyRelayedForAnotherRecipient;
         }

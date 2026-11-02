@@ -152,7 +152,8 @@ The entry:
 1. Is the message for this router? Its executor is this router's mediator, its callback is one the router delivers,
    and it names this router as the recipient. This reads only the calldata.
 2. For this router and already paid: return `AlreadyHandled`. One storage read.
-3. Not for this router and already relayed by the bridge: return `AlreadyRelayedForAnotherRecipient`. One bridge read.
+3. Not for this router and already relayed by the bridge: return `AlreadyRelayedForAnotherRecipient`.
+   Two external calls: the mediator's `bridgeContract()`, then the bridge's `relayedMessages()`.
 4. Otherwise run: a fresh delivery, or the recovery of a strand.
 
 `recover`:

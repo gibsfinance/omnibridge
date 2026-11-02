@@ -961,14 +961,16 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         // must return as soon as it knows the bridge relayed it: no courier slot write, no signature check.
         describe('on a message the bridge already relayed to someone else', () => {
             /**
-             * The most gas, transaction base cost and calldata included, this loser may use. It makes one
-             * bridge read where the loser above makes a storage read, so it pays more. Measured at 42,208
+             * The most gas, transaction base cost and calldata included, this loser may use. It makes two
+             * external calls (the mediator's bridgeContract(), then the bridge's relayedMessages()) where
+             * the loser above makes a storage read, so it pays more. Measured at 42,208
              * (this mediator) and 38,230 (another executor).
              */
             const LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING = 45_000n
             /**
              * The most execution gas, intrinsic cost excluded, this loser may use: one decode of the inner
-             * call and one bridge read, no storage read of this router. Measured at 14,668 (this mediator)
+             * call and two external calls (bridgeContract(), then relayedMessages()), no storage read of
+             * this router. Measured at 14,668 (this mediator)
              * and 12,646 (another executor).
              */
             const LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING = 15_500n
