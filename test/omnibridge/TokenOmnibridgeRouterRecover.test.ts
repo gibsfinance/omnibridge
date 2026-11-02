@@ -25,6 +25,21 @@ const packSignatures = (pieces: Array<{ v: string; r: string; s: string }>) =>
     pieces.map((piece) => piece.r).join('') +
     pieces.map((piece) => piece.s).join('')
 
+/**
+ * The gas a mined transaction's execution used, without the intrinsic cost. The receipt alone can
+ * hide a change in execution cost: a cheap call that carries long calldata is billed the calldata
+ * floor instead (EIP-7623), whatever its execution spent.
+ */
+const executionGas = async (transactionHash: string): Promise<bigint> => {
+    const trace = await hre.network.provider.send('debug_traceTransaction', [
+        transactionHash,
+        { disableStack: true, disableMemory: true, disableStorage: true },
+    ])
+    const steps = trace.structLogs as Array<{ gas: number; gasCost: number }>
+    const last = steps[steps.length - 1]
+    return BigInt(steps[0].gas - last.gas + last.gasCost)
+}
+
 /** Encodes the fee director struct the router decodes from the callback data. */
 const feeDirector = (recipient: string, settings: bigint, limit = 0n, multiplier = 0n) =>
     coder.encode(['address', 'uint256', 'uint256', 'uint256'], [recipient, settings, limit, multiplier])
@@ -252,6 +267,32 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
                 const signatures = await sign(message, [validators[0], validators[1]])
                 await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'NotForThisRouter')
+            })
+
+            it('NotForThisRouter comes before the signatures: no signatures at all still names the recipient', async () => {
+                const messageId = nextMessageId()
+                const innerCall = handleCall({ recipient: stranger.address, data: unwrapData() })
+                await deliver(messageId, innerCall, 3_000_000n)
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                await expect(router.recover(message, '0x')).to.be.revertedWithCustomError(router, 'NotForThisRouter')
+            })
+
+            it('NotForThisRouter comes before the bridge flags: a message the bridge never relayed still names the recipient', async () => {
+                const messageId = nextMessageId()
+                const innerCall = handleCall({ recipient: stranger.address, data: unwrapData() })
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                expect(await amb.relayedMessages(messageId)).to.equal(false)
+                await expect(router.recover(message, '0x')).to.be.revertedWithCustomError(router, 'NotForThisRouter')
+            })
+
+            it('UnsupportedSelector comes before the bridge flags and the signatures', async () => {
+                const messageId = nextMessageId()
+                const innerCall = handleCall({
+                    data: unwrapData(),
+                    selector: mediator.interface.getFunction('handleNativeTokens')!.selector,
+                })
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                await expect(router.recover(message, '0x')).to.be.revertedWithCustomError(router, 'UnsupportedSelector')
             })
 
             it('UnsupportedSelector for a selector that is not a handle call', async () => {
@@ -846,8 +887,12 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
     })
 
     // Several relayers race the same message. The losers must spend as little gas as possible: the
-    // router reads processed[id] before any write, external call or signature check, and returns
-    // AlreadyHandled instead of reverting.
+    // router first asks whether the message is for it (calldata only), then reads processed[id], both
+    // before any write, external call or signature check, and returns AlreadyHandled instead of reverting.
+    //
+    // Two bounds per loser. The receipt bound is what the loser pays, but a cheap call with long
+    // calldata is billed the calldata floor (EIP-7623) whatever its execution spent, so the receipt
+    // alone cannot see a small change in order. The execution bound can.
     describe('losing a race to the same message', () => {
         /**
          * The most gas, transaction base cost and calldata included, a losing call may use. The
@@ -855,6 +900,12 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
          * the processed check), so this bound fails if the cheap check moves back behind them.
          */
         const LOSING_CALL_GAS_CEILING = 45_000n
+        /**
+         * The most execution gas, intrinsic cost excluded, a loser on a message for this router may use:
+         * one calldata decode of the inner call and one storage read. Measured at 5,923 (entry) and
+         * 5,598 (recover). Any external call or signature check before the exit exceeds it.
+         */
+        const LOSING_CALL_EXECUTION_GAS_CEILING = 8_000n
 
         const recoveredStrand = async (winner: 'entry' | 'recover') => {
             const messageId = nextMessageId()
@@ -878,10 +929,12 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 Outcome.AlreadyHandled,
             )
             const receipt = await (await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit(loser.address, message, signatures)).wait()
-            console.log(`      losing entry call used ${receipt.gasUsed} gas`)
+            const execution = await executionGas(receipt.hash)
+            console.log(`      losing entry call used ${receipt.gasUsed} gas (execution ${execution})`)
             expect(receipt.status).to.equal(1)
             expect(receipt.logs.length, 'no event of any kind').to.equal(0)
             expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_GAS_CEILING)
+            expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_EXECUTION_GAS_CEILING)
             expect(await hre.ethers.provider.getStorage(router, runnerSlot)).to.equal(slotBefore)
             expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientBefore)
         })
@@ -892,36 +945,50 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const recipientBefore = await hre.ethers.provider.getBalance(stranger)
             expect(await router.connect(loser).recover.staticCall(message, signatures)).to.equal(Outcome.AlreadyHandled)
             const receipt = await (await router.connect(loser).recover(message, signatures)).wait()
-            console.log(`      losing recover call used ${receipt.gasUsed} gas`)
+            const execution = await executionGas(receipt.hash)
+            console.log(`      losing recover call used ${receipt.gasUsed} gas (execution ${execution})`)
             expect(receipt.status).to.equal(1)
             expect(receipt.logs.length, 'no event of any kind').to.equal(0)
             expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_GAS_CEILING)
+            expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_EXECUTION_GAS_CEILING)
             expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientBefore)
         })
+
+        /**
+         * Sends `message` through the entry as a losing relayer would, with genuine signatures, after
+         * the bridge already relayed it. Returns the outcome, the receipt, the signatures, and whether
+         * the runner slot stayed untouched.
+         */
+        const loserCall = async (message: string) => {
+            const loser = signers[9]
+            const signatures = await sign(message, [validators[0], validators[1]])
+            const runnerSlot = await router.RUNNER_SLOT()
+            const runnerSlotBefore = await hre.ethers.provider.getStorage(router, runnerSlot)
+            const outcome = await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit.staticCall(loser.address, message, signatures)
+            const receipt = await (await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit(loser.address, message, signatures)).wait()
+            const execution = await executionGas(receipt.hash)
+            console.log(`      losing entry call on another recipient's message used ${receipt.gasUsed} gas (execution ${execution})`)
+            return { outcome, receipt, execution, signatures, runnerSlotUnchanged: (await hre.ethers.provider.getStorage(router, runnerSlot)) === runnerSlotBefore }
+        }
 
         // `processed` is written only for messages to this router, so the check above cannot see a race
         // lost on a message for someone else. Nothing can ever be paid for such a message, so the entry
         // must return as soon as it knows the bridge relayed it: no runner slot write, no signature check.
         describe('on a message the bridge already relayed to someone else', () => {
             /**
-             * The most gas, transaction base cost and calldata included, this loser may use. It reads more
-             * than the processed check (one decode of the inner call and one bridge read), so its bound is a
-             * little higher. Before the early exit, the same call wrote the runner and entry slots and ran
-             * the full recovery checks, signatures included, before it reverted: far above this bound.
+             * The most gas, transaction base cost and calldata included, this loser may use. It makes one
+             * bridge read where the loser above makes a storage read, so it pays more. Measured at 42,208
+             * (this mediator) and 38,230 (another executor). The processed-first order spent 45,349 and
+             * 41,584; before the early exit, the same call wrote the runner and entry slots and ran the full
+             * recovery checks, signatures included, before it reverted: far above this bound.
              */
-            const LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING = 50_000n
-
-            /** Relays `message` the way a winner did, then returns what a loser sends. */
-            const loserCall = async (message: string) => {
-                const loser = signers[9]
-                const signatures = await sign(message, [validators[0], validators[1]])
-                const runnerSlot = await router.RUNNER_SLOT()
-                const runnerSlotBefore = await hre.ethers.provider.getStorage(router, runnerSlot)
-                const outcome = await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit.staticCall(loser.address, message, signatures)
-                const receipt = await (await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit(loser.address, message, signatures)).wait()
-                console.log(`      losing entry call on another recipient's message used ${receipt.gasUsed} gas`)
-                return { outcome, receipt, signatures, runnerSlotUnchanged: (await hre.ethers.provider.getStorage(router, runnerSlot)) === runnerSlotBefore }
-            }
+            const LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING = 45_000n
+            /**
+             * The most execution gas, intrinsic cost excluded, this loser may use: one decode of the inner
+             * call and one bridge read, no storage read of this router. Measured at 14,668 (this mediator)
+             * and 12,646 (another executor). The processed-first order spent 17,785 and 16,000.
+             */
+            const LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING = 15_500n
 
             it('another executor: the entry returns AlreadyRelayedForAnotherRecipient cheaply; recover() still reverts WrongExecutor', async () => {
                 const messageId = nextMessageId()
@@ -930,11 +997,12 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 await amb.executeMessageCall(token, router, innerCall, messageId, 100_000n)
                 expect(await amb.relayedMessages(messageId)).to.equal(true)
                 const message = buildMessage({ messageId, executor: token.target as string, innerCall })
-                const { outcome, receipt, signatures, runnerSlotUnchanged } = await loserCall(message)
+                const { outcome, receipt, execution, signatures, runnerSlotUnchanged } = await loserCall(message)
                 expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
                 expect(receipt.status).to.equal(1)
                 expect(receipt.logs.length, 'no event of any kind').to.equal(0)
                 expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING)
+                expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING)
                 expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
                 expect(await router.processed(messageId)).to.equal(false)
                 // the caller of recover() asked for something unrecoverable: that stays an error
@@ -948,14 +1016,65 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 expect(await amb.messageCallStatus(messageId)).to.equal(true)
                 const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
                 const strangerTokensBefore = await token.balanceOf(stranger)
-                const { outcome, receipt, signatures, runnerSlotUnchanged } = await loserCall(message)
+                const { outcome, receipt, execution, signatures, runnerSlotUnchanged } = await loserCall(message)
                 expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
                 expect(receipt.status).to.equal(1)
                 expect(receipt.logs.length, 'no event of any kind').to.equal(0)
                 expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING)
+                expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING)
                 expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
                 expect(await token.balanceOf(stranger), 'nothing paid').to.equal(strangerTokensBefore)
                 await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'NotForThisRouter')
+            })
+        })
+
+        // "Is this message for us?" comes before "has it already been done?". `processed` records only
+        // messages this router paid, so a message for someone else must never be answered from it, even
+        // when its identifier equals one the router already paid.
+        describe('a message for someone else whose identifier this router already paid', () => {
+            /** Recovers a strand to this router and returns its identifier, now recorded in `processed`. */
+            const paidIdentifier = async () => {
+                const { messageId } = await recoveredStrand('recover')
+                expect(await amb.relayedMessages(messageId)).to.equal(true)
+                return messageId
+            }
+            /** A message for this router's mediator that pays `stranger`, not this router. */
+            const anotherRecipientMessage = (messageId: string) =>
+                buildMessage({
+                    messageId,
+                    executor: mediator.target as string,
+                    innerCall: handleCall({ recipient: stranger.address, data: feeDirector(stranger.address, unwrapFlag) }),
+                })
+            /** A message for another contract, not this router's mediator. */
+            const anotherExecutorMessage = (messageId: string) =>
+                buildMessage({ messageId, executor: token.target as string, innerCall: token.interface.encodeFunctionData('deposit') })
+
+            it('the entry returns AlreadyRelayedForAnotherRecipient for this mediator and another recipient, never AlreadyHandled', async () => {
+                const message = anotherRecipientMessage(await paidIdentifier())
+                const { outcome, receipt, runnerSlotUnchanged } = await loserCall(message)
+                expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
+                expect(receipt.logs.length, 'no event of any kind').to.equal(0)
+                expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
+            })
+
+            it('the entry returns AlreadyRelayedForAnotherRecipient for another executor, never AlreadyHandled', async () => {
+                const message = anotherExecutorMessage(await paidIdentifier())
+                const { outcome, receipt, runnerSlotUnchanged } = await loserCall(message)
+                expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
+                expect(receipt.logs.length, 'no event of any kind').to.equal(0)
+                expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
+            })
+
+            it('recover() reverts NotForThisRouter for another recipient, not AlreadyHandled', async () => {
+                const message = anotherRecipientMessage(await paidIdentifier())
+                const signatures = await sign(message, [validators[0], validators[1]])
+                await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'NotForThisRouter')
+            })
+
+            it('recover() reverts WrongExecutor for another executor, not AlreadyHandled', async () => {
+                const message = anotherExecutorMessage(await paidIdentifier())
+                const signatures = await sign(message, [validators[0], validators[1]])
+                await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'WrongExecutor')
             })
         })
     })

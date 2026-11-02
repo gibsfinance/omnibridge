@@ -16,8 +16,9 @@ contract RouterRecoveryBodyHarness is TokenOmnibridgeRouter {
     constructor(address _bridge, IWNative _wNative, address _owner) TokenOmnibridgeRouter(_bridge, _wNative, _owner) {}
 
     /**
-     * @dev Runs the guarded recovery body without the cheap `processed` check
-     * that {recover} makes first.
+     * @dev Runs the guarded recovery body without the outer checks that
+     * {recover} makes before it: "is this message for this router?", then the
+     * cheap `processed` check.
      * @param message the Arbitrary Message Bridge message, exactly as signed
      * @param signatures the validator signatures over that message
      * @return outcome what the recovery body returned

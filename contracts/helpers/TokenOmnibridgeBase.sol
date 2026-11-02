@@ -244,6 +244,23 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     }
 
     /**
+     * @dev The fields of a supported mediator callback, exactly as the message
+     * carries them (see {_decodeHandleCallFields}).
+     * @custom:field selector the mediator callback selector
+     * @custom:field messageToken the token address the message names (see {_localToken})
+     * @custom:field recipient the recipient the message names
+     * @custom:field value the amount the message names
+     * @custom:field data the extra data the message carries for the recipient
+     */
+    struct HandleCall {
+        bytes4 selector;
+        address messageToken;
+        address recipient;
+        uint256 value;
+        bytes data;
+    }
+
+    /**
      * @dev Bridged callback function used for unwrapping received tokens.
      * Can only be called by the associated Omnibridge contract.
      * @param _token the local token the mediator just sent this router: the
@@ -321,23 +338,32 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      *
      * The caller supplies the exact message bytes and the validator signatures,
      * the same pair the bridge accepted. This function trusts nothing the caller
-     * asserts about that pair. It confirms the signatures against the live
-     * validator set, confirms the bridge actually relayed the message and
-     * recorded the recipient call as successful (which is what a stranded
-     * delivery looks like, and is false for a message that failed and was
-     * refunded on the other chain), confirms the message delivered tokens to
-     * THIS router through THIS router's own mediator, and confirms the message
-     * has not already been paid. Only then does it pay, and it records the
-     * identifier first so the same message cannot be paid twice.
+     * asserts about that pair. The checks run in this order, like an HTTP 400
+     * before a 409: is the message for this router, then has it already been
+     * paid, then did the bridge deliver it, then do the signatures hold.
      *
-     * A message this router has already paid is not an error: the call returns
-     * {DeliveryOutcome.AlreadyHandled} before any storage write or external
-     * call, so a caller who lost a race to the same message spends as little
-     * gas as possible. Every other fault reverts, including a message that is
-     * not for this router (the single entry returns
+     *   1. The message is for this router: it ran through THIS router's own
+     *      mediator ({WrongExecutor}), with a callback this router delivers
+     *      ({UnsupportedSelector}, {MalformedMessage}), naming THIS router as
+     *      the recipient ({NotForThisRouter}). Calldata only.
+     *   2. This router has not already paid it. A message already paid is not an
+     *      error: the call returns {DeliveryOutcome.AlreadyHandled} before any
+     *      storage write or external call, so a caller who lost a race to the
+     *      same message spends as little gas as possible.
+     *   3. The bridge relayed the message and recorded the mediator call as
+     *      successful (which is what a stranded delivery looks like, and is
+     *      false for a message that failed and was refunded on the other chain).
+     *   4. The signatures hold against the live validator set. They gate every
+     *      payment: only after them does the call resolve the local token and
+     *      pay, and it records the identifier first so the same message cannot
+     *      be paid twice.
+     *
+     * A message that is not for this router reverts at step 1 even when this
+     * router paid a message with the same identifier: `processed` speaks only
+     * for messages to this router. (The single entry returns
      * {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} for such a message
      * once the bridge relayed it, but a caller of this function asked to
-     * recover something that cannot be recovered here).
+     * recover something that cannot be recovered here.)
      *
      * @param message the Arbitrary Message Bridge message, exactly as signed
      * @param signatures the validator signatures over that message
@@ -345,21 +371,15 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * message, {DeliveryOutcome.AlreadyHandled} when it was already paid
      */
     function recover(bytes calldata message, bytes calldata signatures) external returns (DeliveryOutcome outcome) {
-        if (_isAlreadyProcessed(message)) {
+        (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(message);
+        // Steps 1 and 2 run here, before the reentrancy guard's write, so a
+        // caller who sent a message for someone else or lost a race spends
+        // little gas. The recovery body repeats both, so it stands alone.
+        _requireDeliversToThisRouter(executor, innerCall);
+        if (processed[messageIdentifier]) {
             return DeliveryOutcome.AlreadyHandled;
         }
         return _recoverWithReentrancyGuard(message, signatures);
-    }
-
-    /**
-     * @dev Whether this router has already paid the message: one parse and
-     * one storage read, no external call and no write. Both public entry
-     * points run it first, so a caller who lost a race returns at once.
-     * @param message the Arbitrary Message Bridge message, exactly as signed
-     */
-    function _isAlreadyProcessed(bytes calldata message) internal view returns (bool) {
-        (bytes32 messageIdentifier,,) = _parseMessage(message);
-        return processed[messageIdentifier];
     }
 
     /**
@@ -389,22 +409,21 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * already processed. It takes no reentrancy modifier of its own; its one
      * caller, {_recoverWithReentrancyGuard}, holds it.
      *
-     * The cheap checks run first, so a caller who loses a race or sends a
-     * message the bridge never delivered spends little gas: parse, executor,
-     * processed, then the two bridge flags. None of them can lead to a
-     * payment, only to an exit. The validator signatures come next and gate
-     * everything after them: the recipient check, the token lookup and the
-     * payment. The recipient check stays behind the signatures on purpose, so
-     * a real message for another recipient still proves the signature check
-     * against live data (it can only stop at {NotForThisRouter} once the
-     * signatures passed).
+     * The checks run in the order {recover} describes: is the message for this
+     * router (calldata only), has it already been paid (one storage read),
+     * did the bridge deliver it (bridge reads), and do the signatures hold.
+     * None of the first three can lead to a payment, only to an exit. The
+     * validator signatures come next and gate everything after them: the
+     * token lookup and the payment. Both callers already ran the first two
+     * checks; the body repeats them so it never depends on its caller, and its
+     * `processed` check is the defence in depth against a double payment.
      */
     function _recover(bytes calldata message, bytes calldata signatures) internal returns (DeliveryOutcome outcome) {
         (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(message);
-        // The message must have run through this router's own mediator. The
-        // mediator is the only caller {onTokenBridged} accepts, so any message
-        // for another mediator or an ordinary transfer cannot be recovered here.
-        if (executor != bridge) revert WrongExecutor();
+        // The message must be for this router: through its own mediator (the
+        // only caller {onTokenBridged} accepts), with a callback it delivers,
+        // naming it as the recipient.
+        HandleCall memory handleCall = _requireDeliversToThisRouter(executor, innerCall);
         // Losing a race is not an error: nothing is written and nothing is paid.
         if (processed[messageIdentifier]) return DeliveryOutcome.AlreadyHandled;
 
@@ -412,7 +431,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // Everything above can only exit. From here on the call can pay, so the
         // validator signatures must hold first.
         _verifySignatures(validatorContract, message, signatures);
-        _payRecoveredMessage(messageIdentifier, innerCall);
+        _payRecoveredMessage(messageIdentifier, handleCall);
         return DeliveryOutcome.Recovered;
     }
 
@@ -445,25 +464,25 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     }
 
     /**
-     * @dev Pays a recovered message once the signatures have passed. Reverts
-     * unless the message's recipient is this router. Records the message as
-     * processed before it moves any tokens.
+     * @dev Pays a recovered message once the signatures have passed. Resolves
+     * the local token the mediator really sent (see {_localToken}), and records
+     * the message as processed before it moves any tokens.
      * @param messageIdentifier the identifier parsed from the message
-     * @param innerCall the mediator callback the message carries
+     * @param handleCall the callback fields, already checked to name this
+     * router as the recipient (see {_requireDeliversToThisRouter})
      */
-    function _payRecoveredMessage(bytes32 messageIdentifier, bytes calldata innerCall) internal {
-        (address localToken, address recipient, uint256 messageValue, bytes memory data) = _decodeHandleCall(innerCall);
-        if (recipient != address(this)) revert NotForThisRouter();
+    function _payRecoveredMessage(bytes32 messageIdentifier, HandleCall memory handleCall) internal {
+        address localToken = _localToken(handleCall.selector, handleCall.messageToken);
         // The same rule as a fresh delivery: pay what the message names, capped
         // at what the router holds of the token right now.
-        uint256 value = _payableAmount(localToken, messageValue);
+        uint256 value = _payableAmount(localToken, handleCall.value);
 
         _markProcessed(messageIdentifier);
         // Same distribution as a fresh delivery: when the single entry is handling
         // this very message with a validator runner, that runner earns the tip;
         // a public recover() or a non-validator pays the recipient in full.
-        _distributeDelivery(localToken, value, data, messageIdentifier);
-        emit DeliveryRecovered(messageIdentifier, localToken, recipient, value);
+        _distributeDelivery(localToken, value, handleCall.data, messageIdentifier);
+        emit DeliveryRecovered(messageIdentifier, localToken, handleCall.recipient, value);
     }
 
     /**
@@ -647,45 +666,26 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     }
 
     /**
-     * @dev Decodes the mediator callback embedded in a message. Accepts only the
-     * three "and call" selectors that carry a fee director, which is exactly the
-     * shape this router delivers; anything else is rejected. Returns the LOCAL
-     * token the mediator sent this router (see {_localToken}), never the raw
-     * token address from the message.
-     */
-    function _decodeHandleCall(bytes calldata innerCall)
-        internal
-        view
-        returns (address localToken, address recipient, uint256 value, bytes memory data)
-    {
-        bytes4 selector;
-        address messageToken;
-        (selector, messageToken, recipient, value, data) = _decodeHandleCallFields(innerCall);
-        localToken = _localToken(selector, messageToken);
-    }
-
-    /**
      * @dev Decodes the fields of a supported mediator callback exactly as the
-     * message carries them. Reverts for a callback this router does not deliver.
-     * @return selector the mediator callback selector
-     * @return messageToken the token address the message names (see {_localToken})
-     * @return recipient the recipient the message names
-     * @return value the amount the message names
-     * @return data the extra data the message carries for the recipient
+     * message carries them. Accepts only the three "and call" selectors that
+     * carry a fee director, which is exactly the shape this router delivers;
+     * reverts {UnsupportedSelector} for anything else and {MalformedMessage}
+     * for a call too short to hold a selector. The token it returns is the
+     * address the message names, not yet the local token (see {_localToken}).
+     * @param innerCall the mediator callback the message carries
+     * @return handleCall the callback fields
      */
-    function _decodeHandleCallFields(bytes calldata innerCall)
-        internal
-        pure
-        returns (bytes4 selector, address messageToken, address recipient, uint256 value, bytes memory data)
-    {
+    function _decodeHandleCallFields(bytes calldata innerCall) internal pure returns (HandleCall memory handleCall) {
         if (innerCall.length < 4) revert MalformedMessage();
-        selector = bytes4(innerCall[0:4]);
-        if (!_isSupportedHandleSelector(selector)) revert UnsupportedSelector();
-        if (selector == DEPLOY_AND_HANDLE_BRIDGED_SELECTOR) {
-            (messageToken, recipient, value, data) = _decodeDeployCallFields(innerCall[4:]);
-            return (selector, messageToken, recipient, value, data);
+        handleCall.selector = bytes4(innerCall[0:4]);
+        if (!_isSupportedHandleSelector(handleCall.selector)) revert UnsupportedSelector();
+        if (handleCall.selector == DEPLOY_AND_HANDLE_BRIDGED_SELECTOR) {
+            (handleCall.messageToken, handleCall.recipient, handleCall.value, handleCall.data) =
+                _decodeDeployCallFields(innerCall[4:]);
+            return handleCall;
         }
-        (messageToken, recipient, value, data) = abi.decode(innerCall[4:], (address, address, uint256, bytes));
+        (handleCall.messageToken, handleCall.recipient, handleCall.value, handleCall.data) =
+            abi.decode(innerCall[4:], (address, address, uint256, bytes));
     }
 
     /**
@@ -715,16 +715,36 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Whether a message delivers tokens to this router through this
-     * router's own mediator, using a callback this router handles. Never
-     * reverts for a message that is for someone else.
+     * router's own mediator, using a callback this router handles. Calldata
+     * only: `bridge` is immutable, so this makes no storage read and no
+     * external call. Never reverts for a message that is for someone else.
+     * The single entry's answer to "is this message for us?".
+     * @param executor the executor parsed from the message
+     * @param innerCall the mediator callback parsed from the message
      */
-    function _messageDeliversToThisRouter(bytes calldata message) internal view returns (bool) {
-        (, address executor, bytes calldata innerCall) = _parseMessage(message);
+    function _deliversToThisRouter(address executor, bytes calldata innerCall) internal view returns (bool) {
         if (executor != bridge) return false;
         if (innerCall.length < 4) return false;
         if (!_isSupportedHandleSelector(bytes4(innerCall[0:4]))) return false;
-        (,, address recipient,,) = _decodeHandleCallFields(innerCall);
-        return recipient == address(this);
+        return _decodeHandleCallFields(innerCall).recipient == address(this);
+    }
+
+    /**
+     * @dev The recovery's answer to "is this message for us?": the same test
+     * as {_deliversToThisRouter}, but it reverts with the reason instead of
+     * returning false. Calldata only, no storage read and no external call.
+     * @param executor the executor parsed from the message
+     * @param innerCall the mediator callback parsed from the message
+     * @return handleCall the callback fields, for the payment
+     */
+    function _requireDeliversToThisRouter(address executor, bytes calldata innerCall)
+        internal
+        view
+        returns (HandleCall memory handleCall)
+    {
+        if (executor != bridge) revert WrongExecutor();
+        handleCall = _decodeHandleCallFields(innerCall);
+        if (handleCall.recipient != address(this)) revert NotForThisRouter();
     }
 
     /**
@@ -852,13 +872,21 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * {DeliveryNotCompleted} otherwise: this router's own delivery is all or
      * nothing. A message for any other recipient gets only the bridge's check.
      *
-     * A message this router has already paid returns
-     * {DeliveryOutcome.AlreadyHandled} before any storage write or external
-     * call: losing a race to another relayer is not an error. A message the
-     * bridge already relayed that does not deliver to this router returns
-     * {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} after one bridge read
-     * and before any storage write: this router can never pay it. Relayers
-     * should simulate the call first and read the returned outcome.
+     * The entry first asks "is this message for us?" (calldata only), and only
+     * then "has it already been done?", like an HTTP 400 before a 409:
+     *
+     *   - A message that delivers to this router and that this router has
+     *     already paid returns {DeliveryOutcome.AlreadyHandled} after one
+     *     storage read, before any storage write or external call: losing a
+     *     race to another relayer is not an error.
+     *   - A message that does not deliver to this router is never answered
+     *     from `processed`, which records only this router's own payments. If
+     *     the bridge already relayed it, the entry returns
+     *     {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} after one bridge
+     *     read and before any storage write: this router can never pay it.
+     *   - Anything else runs: a fresh relay, or the recovery of a strand.
+     *
+     * Relayers should simulate the call first and read the returned outcome.
      * @param runner the validator to attribute the tip to. Any caller may name
      * any validator; the tip goes to the runner, not to the caller. A fresh
      * delivery reverts {RunnerNotValidator} for a runner that is not a
@@ -878,30 +906,32 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         returns (DeliveryOutcome outcome)
     {
         // Read first, so the gas-mode tip measures from the same point as before
-        // the cheap check below was added.
+        // the cheap checks below were added.
         uint256 entryGas = gasleft();
-        // A caller who lost the race to this message returns here, before the
-        // runner slot write or any external call.
-        if (_isAlreadyProcessed(_data)) {
+        // Parsed once; every check below and the dispatch reuse the parts.
+        (bytes32 messageIdentifier, address executor, bytes calldata innerCall) = _parseMessage(_data);
+        // "Is this message for us?" first: calldata only.
+        bool deliversToThisRouter = _deliversToThisRouter(executor, innerCall);
+        // For us and already paid: a caller who lost the race returns here, after
+        // one storage read and before the runner slot write or any external call.
+        if (deliversToThisRouter && processed[messageIdentifier]) {
             return DeliveryOutcome.AlreadyHandled;
         }
-        bool deliversToThisRouter = _messageDeliversToThisRouter(_data);
-        // `processed` is written only for messages to this router, so a race lost
-        // on a message for someone else is caught here instead: one bridge read,
-        // still before the runner slot write and the signature check.
-        if (!deliversToThisRouter && _isRelayedByBridge(_data)) {
+        // Not for us: `processed` says nothing about this message, so the bridge
+        // answers instead. One bridge read, still before the runner slot write
+        // and the signature check.
+        if (!deliversToThisRouter && _isRelayedByBridge(messageIdentifier)) {
             return DeliveryOutcome.AlreadyRelayedForAnotherRecipient;
         }
-        return _runAttributedEntry(runner, entryGas, deliversToThisRouter, _data, _signatures);
+        return _runAttributedEntry(runner, entryGas, messageIdentifier, deliversToThisRouter, _data, _signatures);
     }
 
     /**
      * @dev Whether the bridge has already relayed the message. Reads one flag
      * from the bridge and writes nothing.
-     * @param message the Arbitrary Message Bridge message, exactly as signed
+     * @param messageIdentifier the identifier parsed from the message
      */
-    function _isRelayedByBridge(bytes calldata message) internal view returns (bool) {
-        (bytes32 messageIdentifier,,) = _parseMessage(message);
+    function _isRelayedByBridge(bytes32 messageIdentifier) internal view returns (bool) {
         return _arbitraryMessageBridge().relayedMessages(messageIdentifier);
     }
 
@@ -913,8 +943,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param runner the address the caller names to earn the tip
      * @param entryGas the gas left when the entry started, which the gas-mode
      * tip measures from
+     * @param messageIdentifier the identifier parsed from `_data`
      * @param deliversToThisRouter whether the message delivers to this router
-     * (see {_messageDeliversToThisRouter})
+     * (see {_deliversToThisRouter})
      * @param _data the signed message
      * @param _signatures the validator signatures over the message
      * @return outcome what the dispatch did
@@ -922,6 +953,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     function _runAttributedEntry(
         address runner,
         uint256 entryGas,
+        bytes32 messageIdentifier,
         bool deliversToThisRouter,
         bytes calldata _data,
         bytes calldata _signatures
@@ -930,7 +962,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         nonReentrantUint256(RUNNER_SLOT, uint256(uint96(entryGas)) | (uint256(uint160(runner)) << 96))
         returns (DeliveryOutcome outcome)
     {
-        (bytes32 messageIdentifier,,) = _parseMessage(_data);
         StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = messageIdentifier;
         outcome = _dispatchEntryMessage(runner, messageIdentifier, deliversToThisRouter, _data, _signatures);
         StorageSlot.getBytes32Slot(ENTRY_MESSAGE_SLOT).value = _IDLE_ENTRY_MESSAGE;
@@ -965,9 +996,9 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         //     does not deliver to this router, and for one this router already
         //     paid, so the only reason to be here is that the first delivery
         //     stranded. Finish it, paying the tip to the named runner only when
-        //     that runner is a validator. {_recover} re-checks everything
-        //     (executor, that it has not been paid, the two bridge flags, the
-        //     signatures, and that it targeted this router): it returns
+        //     that runner is a validator. {_recover} re-checks everything, in
+        //     its own order (that it is for this router, that it has not been
+        //     paid, the two bridge flags, then the signatures): it returns
         //     {DeliveryOutcome.AlreadyHandled} for a message already paid, and
         //     reverts for any other fault.
         //

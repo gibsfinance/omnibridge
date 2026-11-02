@@ -138,8 +138,32 @@ Both the entry and `recover` return a `DeliveryOutcome`:
 
 Losing a race is not an error. The call returns at once and writes nothing.
 In the unit test fixture a losing call costs about 37,000 gas for `AlreadyHandled`,
-and 41,500 to 45,500 gas for `AlreadyRelayedForAnotherRecipient`, transaction cost included.
-Before this change a lost race reverted. It cost 112,649 gas on the entry and 76,682 gas on `recover`.
+and 38,000 to 42,500 gas for `AlreadyRelayedForAnotherRecipient`, transaction cost included.
+Before the router returned an outcome, a lost race reverted. It cost 112,649 gas on the entry and 76,682 gas on `recover`.
+
+### The order of the checks
+
+Both calls ask "is this message for this router?" before "has it already been done?",
+the way a web server answers 400 Bad Request before 409 Conflict.
+`processed` records only this router's own payments, so it never answers for a message to someone else,
+even when that message's identifier equals one the router already paid.
+
+The entry:
+
+1. Is the message for this router? Its executor is this router's mediator, its callback is one the router delivers,
+   and it names this router as the recipient. This reads only the calldata.
+2. For this router and already paid: return `AlreadyHandled`. One storage read.
+3. Not for this router and already relayed by the bridge: return `AlreadyRelayedForAnotherRecipient`. One bridge read.
+4. Otherwise run: a fresh delivery, or the recovery of a strand.
+
+`recover`:
+
+1. Is the message for this router? If not, revert `WrongExecutor`, `UnsupportedSelector`, `MalformedMessage` or `NotForThisRouter`.
+   This reads only the calldata.
+2. Already paid: return `AlreadyHandled`. One storage read.
+3. The bridge relayed the message and the mediator call succeeded, or revert `MessageNotRelayed` or `MessageNotDelivered`.
+4. The validator signatures hold, or revert. The signatures gate every payment.
+5. Resolve the local token and pay.
 
 These faults revert:
 

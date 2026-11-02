@@ -68,6 +68,27 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             expect(await token.balanceOf(router)).to.equal(0n)
         })
 
+        // "Is this message for us?" comes before "has it already been done?". The stub bridge never marks
+        // a message relayed, so a message for someone else under an identifier this router already paid
+        // has no early exit at all: it must go on to the runner check, never return AlreadyHandled.
+        it('a message for another recipient under an identifier this router paid proceeds to the runner check', async () => {
+            await router.connect(owner).setValidatorStatus(runner, true)
+            const paid = freshMessage(feeDirector(user.address, 0n))
+            await router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(runner, paid, '0x')
+            const messageId = ethers.keccak256(ethers.toUtf8Bytes('dispatch-fresh'))
+            expect(await router.processed(messageId)).to.equal(true)
+            expect(await stubMediator.relayedMessages(messageId)).to.equal(false)
+            const anotherRecipient = buildMessage({
+                messageId,
+                sender: stubMediator.target as string,
+                executor: stubMediator.target as string,
+                innerCall: handleNativeCall({ token: token.target as string, recipient: user.address, value: oneEther, data: feeDirector(user.address, 0n) }),
+            })
+            await expect(router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(sender, anotherRecipient, '0x'))
+                .to.be.revertedWithCustomError(router, 'RunnerNotValidator')
+                .withArgs(sender.address)
+        })
+
         // The live bridge always reports the executing message during a callback. A delivery that reads
         // a zero identifier would record nothing and still pay, so a later recovery could pay it again.
         describe('the executing message identifier', () => {

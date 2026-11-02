@@ -205,7 +205,7 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             return undefined
         }
 
-        it('recover passes real signature verification and stops at NotForThisRouter', async function () {
+        it('recover passes real signature verification for a router at the real recipient; a corrupted set stops at the signatures', async function () {
             if (!forked) return this.skip()
             const bridgeInterface = new ethers.Interface(bridgeAbi)
             const bridge = new ethers.Contract(BRIDGE, bridgeAbi, hre.ethers.provider)
@@ -246,23 +246,42 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             const routerFactory = await hre.ethers.getContractFactory('TokenOmnibridgeRouter')
             const freshRouter = await routerFactory.deploy(MEDIATOR, WETH, owner)
 
-            // Reaching NotForThisRouter proves every earlier gate passed against the real data:
-            // the executor offset, the real validator signatures, relayedMessages, messageCallStatus,
-            // the processed flag, and the selector. Only the recipient check is left, and the real
-            // recipient is not this fresh router.
-            await expect(freshRouter.recover(found.message, found.signatures)).to.be.revertedWithCustomError(
-                freshRouter,
-                'NotForThisRouter',
-            )
-
-            // The test can fail: a corrupted signature set must stop earlier, with a signature error.
+            // "Is this message for us?" runs before the signatures, so a router at any other address stops at
+            // NotForThisRouter whatever signatures it is given. That proves nothing about the signatures.
             const corrupted = found.signatures.slice(0, -2) + (found.signatures.endsWith('00') ? '01' : '00')
-            const corruptedOutcome = await freshRouter.recover.staticCall(found.message, corrupted).then(
-                () => 'did not revert',
-                (error: Error) => error.message,
+            await expect(freshRouter.recover(found.message, corrupted)).to.be.revertedWithCustomError(freshRouter, 'NotForThisRouter')
+
+            // So the message must be for the router under test. Put the fresh router's runtime code at the real
+            // message's recipient. The router's bridge and wrapped token are immutables, which live in the
+            // runtime code, so they move with it; the reads below confirm it.
+            const bytes = ethers.getBytes(found.message)
+            const innerCall = ethers.hexlify(bytes.slice(79 + bytes[76] + bytes[77]))
+            const recipient = coder.decode(['address', 'address', 'uint256', 'bytes'], '0x' + innerCall.slice(10))[1] as string
+            console.log(`      real recipient ${recipient}, code before: ${(await hre.ethers.provider.getCode(recipient)).length > 2 ? 'contract' : 'none'}`)
+            await hre.network.provider.send('hardhat_setCode', [recipient, await hre.ethers.provider.getCode(freshRouter.target as string)])
+            const routerAtRecipient = routerFactory.attach(recipient) as typeof freshRouter
+            expect(await routerAtRecipient.bridge(), 'the bridge immutable moved with the code').to.equal(MEDIATOR)
+            expect(await routerAtRecipient.wNative(), 'the wrapped token immutable moved with the code').to.equal(WETH)
+            expect(await routerAtRecipient.processed(found.messageId), 'the recipient never recorded this message').to.equal(false)
+
+            // The genuine signatures pass the signature gate. Every gate before them passes against the real
+            // data too: the executor offset, the selector, the recipient, processed, relayedMessages and
+            // messageCallStatus. What the call then does depends only on the real state after the signatures.
+            const genuineOutcome = await routerAtRecipient.recover.staticCall(found.message, found.signatures).then(
+                (outcome: bigint) => `returned ${outcome}`,
+                (error: any) => routerAtRecipient.interface.parseError(error.data)?.name ?? `reverted without a router error: ${String(error.message).slice(0, 120)}`,
             )
-            expect(corruptedOutcome).to.not.contain('NotForThisRouter')
-            expect(corruptedOutcome).to.match(/SignerNotValidator|InvalidSignature|DuplicateSignature/)
+            console.log(`      genuine signatures, router at the recipient: ${genuineOutcome}`)
+            expect(genuineOutcome).to.not.match(/NotEnoughSignatures|SignerNotValidator|InvalidSignature|DuplicateSignature/)
+            expect(genuineOutcome, 'genuine signatures reach the payment and recover the message').to.equal('returned 1')
+
+            // The test can fail: the same call with a corrupted signature set stops at the signature gate.
+            const corruptedOutcome = await routerAtRecipient.recover.staticCall(found.message, corrupted).then(
+                () => 'did not revert',
+                (error: any) => routerAtRecipient.interface.parseError(error.data)?.name ?? String(error.message),
+            )
+            console.log(`      corrupted signatures, router at the recipient: ${corruptedOutcome}`)
+            expect(corruptedOutcome).to.match(/^(SignerNotValidator|InvalidSignature|DuplicateSignature)$/)
         })
     })
 

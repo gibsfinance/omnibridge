@@ -581,7 +581,7 @@ describe('Router hardening against real strands, on an anvil fork', function () 
             'function messageCallStatus(bytes32) view returns (bool)',
         ]
 
-        it('recover passes real validator signatures and stops at NotForThisRouter; a corrupted signature stops earlier', async function () {
+        it('recover passes real validator signatures for a router at the real recipient; a corrupted set stops at the signatures', async function () {
             const used = await forkAt(ETHEREUM_RPCS, REAL_BLOCK, REAL_MEDIATOR)
             if (!used) {
                 console.log('      skipped: no Ethereum endpoint could fork')
@@ -621,11 +621,34 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     () => 'did not revert',
                     (error: any) => freshRouter.interface.parseError(error.data)?.name ?? `unparsed: ${String(error.message).slice(0, 80)}`,
                 )
-            expect(await errorOf(freshRouter.recover.staticCall(found!.message, found!.signatures))).to.equal('NotForThisRouter')
+            // "Is this message for us?" runs before the signatures, so a router at any other address stops at
+            // NotForThisRouter whatever signatures it is given. That proves nothing about the signatures.
             const corrupted = found!.signatures.slice(0, -2) + (found!.signatures.endsWith('00') ? '01' : '00')
-            const corruptedError = await errorOf(freshRouter.recover.staticCall(found!.message, corrupted))
-            console.log(`      real message ${found!.messageId}: genuine signatures reach NotForThisRouter, corrupted signatures give ${corruptedError}`)
-            expect(corruptedError).to.match(/SignerNotValidator|InvalidSignature|DuplicateSignature/)
+            expect(await errorOf(freshRouter.recover.staticCall(found!.message, corrupted))).to.equal('NotForThisRouter')
+
+            // So put the fresh router's runtime code at the real recipient. Its bridge and wrapped token are
+            // immutables inside the runtime code, so they move with it; the reads below confirm it.
+            const bytes = ethers.getBytes(found!.message)
+            const inner = ethers.hexlify(bytes.slice(79 + bytes[76] + bytes[77]))
+            const recipient = coder.decode(['address', 'address', 'uint256', 'bytes'], '0x' + inner.slice(10))[1] as string
+            await rpc('anvil_setCode', [recipient, await hre.ethers.provider.getCode(freshRouter.target as string)])
+            const routerAtRecipient = routerFactory.attach(recipient) as typeof freshRouter
+            expect(await routerAtRecipient.bridge(), 'the bridge immutable moved with the code').to.equal(REAL_MEDIATOR)
+            expect(await routerAtRecipient.wNative(), 'the wrapped token immutable moved with the code').to.equal(WETH)
+            expect(await routerAtRecipient.processed(found!.messageId)).to.equal(false)
+
+            const outcomeOf = (promise: Promise<bigint>) =>
+                promise.then(
+                    (outcome) => `returned ${outcome}`,
+                    (error: any) => routerAtRecipient.interface.parseError(error.data)?.name ?? `unparsed: ${String(error.message).slice(0, 80)}`,
+                )
+            const genuine = await outcomeOf(routerAtRecipient.recover.staticCall(found!.message, found!.signatures))
+            const corruptedAtRecipient = await outcomeOf(routerAtRecipient.recover.staticCall(found!.message, corrupted))
+            console.log(`      real message ${found!.messageId} at recipient ${recipient}: genuine signatures ${genuine}, corrupted signatures ${corruptedAtRecipient}`)
+            // Every gate before the signatures passes against the real data, the genuine signatures pass, and
+            // the call reaches the payment.
+            expect(genuine, 'genuine signatures reach the payment and recover the message').to.equal('returned 1')
+            expect(corruptedAtRecipient).to.match(/^(SignerNotValidator|InvalidSignature|DuplicateSignature)$/)
         })
     })
 
