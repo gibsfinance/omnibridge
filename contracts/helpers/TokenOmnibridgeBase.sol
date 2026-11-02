@@ -333,7 +333,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * A message this router has already paid is not an error: the call returns
      * {DeliveryOutcome.AlreadyHandled} before any storage write or external
      * call, so a caller who lost a race to the same message spends as little
-     * gas as possible. Every genuine fault still reverts.
+     * gas as possible. Every other fault reverts, including a message that is
+     * not for this router (the single entry returns
+     * {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} for such a message
+     * once the bridge relayed it, but a caller of this function asked to
+     * recover something that cannot be recovered here).
      *
      * @param message the Arbitrary Message Bridge message, exactly as signed
      * @param signatures the validator signatures over that message
@@ -827,7 +831,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
 
     /**
      * @dev Ether receive function.
-     * Should be only called from the wNative contract when withdrawing native coins. Will revert otherwise.
+     * Accepts ether only from the wNative contract, which pays this router when
+     * it unwraps. Reverts for every other sender. Apart from this, only the
+     * wrapping relay functions of the derived routers (wrapAndRelayTokens,
+     * relayTokensAndCall) accept ether, and they wrap all of it.
      */
     receive() external payable {
         require(msg.sender == address(wNative));
@@ -847,8 +854,11 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      *
      * A message this router has already paid returns
      * {DeliveryOutcome.AlreadyHandled} before any storage write or external
-     * call: losing a race to another relayer is not an error. Relayers should
-     * simulate the call first and read the returned outcome.
+     * call: losing a race to another relayer is not an error. A message the
+     * bridge already relayed that does not deliver to this router returns
+     * {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} after one bridge read
+     * and before any storage write: this router can never pay it. Relayers
+     * should simulate the call first and read the returned outcome.
      * @param runner the validator to attribute the tip to. Any caller may name
      * any validator; the tip goes to the runner, not to the caller. A fresh
      * delivery reverts {RunnerNotValidator} for a runner that is not a
@@ -858,8 +868,10 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @notice that the sender does not matter, so this method could be called via
      * multicall for more efficient gas savings and still attribute tokens to the validator appropriately
      * @return outcome {DeliveryOutcome.Delivered} for a fresh relay,
-     * {DeliveryOutcome.Recovered} for a finished strand, or
-     * {DeliveryOutcome.AlreadyHandled} when the router had already paid it
+     * {DeliveryOutcome.Recovered} for a finished strand,
+     * {DeliveryOutcome.AlreadyHandled} when the router had already paid it, or
+     * {DeliveryOutcome.AlreadyRelayedForAnotherRecipient} when the bridge had
+     * already relayed a message that is not for this router
      */
     function safeExecuteSignaturesWithAutoGasLimit(address runner, bytes calldata _data, bytes calldata _signatures)
         external
@@ -949,12 +961,15 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
         // decides what the message needs:
         //
         //   - If the bridge has already relayed this message, a first delivery
-        //     ran. The bridge never relays a message twice, so the only reason
-        //     to be here again is that the first delivery stranded. Finish it,
-        //     paying the tip to the named runner only when that runner is a
-        //     validator. {_recover} re-checks everything (signatures, the two
-        //     bridge flags, that it targeted this router, and that it has not
-        //     been paid) and reverts a message that was already completed.
+        //     ran. The entry has already returned for a relayed message that
+        //     does not deliver to this router, and for one this router already
+        //     paid, so the only reason to be here is that the first delivery
+        //     stranded. Finish it, paying the tip to the named runner only when
+        //     that runner is a validator. {_recover} re-checks everything
+        //     (executor, that it has not been paid, the two bridge flags, the
+        //     signatures, and that it targeted this router): it returns
+        //     {DeliveryOutcome.AlreadyHandled} for a message already paid, and
+        //     reverts for any other fault.
         //
         //   - Otherwise this is a fresh delivery. The named runner must be a
         //     validator (the existing protection against a stranger claiming the

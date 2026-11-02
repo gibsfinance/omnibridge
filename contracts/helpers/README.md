@@ -107,6 +107,24 @@ The caller does not have to be the runner. The tip goes to the runner.
 The tip is bound to the message the call handles. It is paid only on that message's own fresh delivery or recovery.
 A call to `recover(message, signatures)` never pays a tip.
 
+### Add runners before the first delivery
+
+The router's validator list starts empty.
+Until the owner adds runners with `setValidatorStatus(runner, true)`, every fresh delivery through the entry reverts `RunnerNotValidator(runner)`.
+Recoveries through the entry still work, but pay no tip.
+
+### Relay each message through the router it names
+
+Send each message to the entry of the router that the message names as its recipient.
+Another router's entry still relays the message through the bridge, but that router is not handling a payout of its own.
+So the named router's callback pays no tip, and the recipient receives the full value.
+
+### Ways to deliver that never pay a tip
+
+A direct relay on the bridge (`safeExecuteSignaturesWithAutoGasLimit(message, signatures)` on the bridge, not on the router)
+and a public `recover(message, signatures)` always skip the tip.
+They pay the recipient the full value. Use them when the tip is what fails (see below).
+
 ### Simulate first and read the outcome
 
 Relayers should simulate every call (`eth_call`) before they send it.
@@ -115,20 +133,29 @@ Both the entry and `recover` return a `DeliveryOutcome`:
 * `Delivered` (0): the entry relayed a fresh message through the bridge.
 * `Recovered` (1): the message had stranded in the router and the call paid it.
 * `AlreadyHandled` (2): the router already paid this message. Another relayer won the race.
+* `AlreadyRelayedForAnotherRecipient` (3): only the entry returns this. The bridge already relayed the message,
+  and the message does not deliver to this router, so this router can never pay it. Another relayer won the race.
 
-Losing a race is not an error. The call returns `AlreadyHandled` at once and writes nothing.
-In the unit test fixture a losing call costs about 37,000 gas, transaction cost included.
-Before this change it reverted and cost 112,649 gas on the entry and 76,682 gas on `recover`.
+Losing a race is not an error. The call returns at once and writes nothing.
+In the unit test fixture a losing call costs about 37,000 gas for `AlreadyHandled`,
+and 41,500 to 45,500 gas for `AlreadyRelayedForAnotherRecipient`, transaction cost included.
+Before this change a lost race reverted. It cost 112,649 gas on the entry and 76,682 gas on `recover`.
 
-Every genuine fault still reverts: bad signatures, wrong executor, a message for another recipient,
-a message the bridge never relayed, a message that failed and was refunded, an unknown bridged token,
-and a runner that is not a validator on a fresh delivery.
+These faults revert:
+
+* On the entry and on `recover`: bad signatures, a message that failed and was refunded, an unknown bridged token,
+  and data the router cannot read.
+* On `recover` only: a wrong executor, a message for another recipient, and a message the bridge never relayed.
+  Through the entry, a message the bridge never relayed is not a fault. It is a fresh delivery.
+  Through the entry, an already relayed message for someone else returns `AlreadyRelayedForAnotherRecipient`.
+* On a fresh delivery through the entry: a runner that is not a validator (`RunnerNotValidator`),
+  and a delivery to this router that did not complete (`DeliveryNotCompleted`, see below).
 
 ### Gas for a fresh delivery
 
 The real bridge forwards almost all the gas it has to the mediator. So on mainnet the transaction gas is the number that matters, not the gas in the message header.
 On a mainnet fork, a fresh wrapped ether delivery with an unwrap and a fixed tip needed at least 444,000 transaction gas through the entry.
-The same kind of message sent straight to the bridge needed 366,000.
+The same kind of message sent straight to the bridge needed 360,000. The sweep steps by 6,000 gas, so both numbers are accurate to that step.
 Below that the whole transaction ran out of gas and reverted. No gas level left the tokens stranded.
 Use the simulation to set the gas. Do not reuse a limit sized for a direct bridge call.
 
@@ -138,11 +165,17 @@ A fresh delivery to this router through the entry is all or nothing.
 When the router's callback fails, the entry reverts `DeliveryNotCompleted(messageId)`.
 The tokens stay with the mediator and the message stays unrelayed.
 
-This happens when the callback fails for a reason other than gas, for example data the router cannot read.
-The delivery service then relays the message directly on the Arbitrary Message Bridge
-(`safeExecuteSignaturesWithAutoGasLimit(message, signatures)` on the bridge, not on the router).
-The bridge records success, but the tokens strand in the router.
-Recovery fails for the same reason the callback failed, so only the owner can release them with `claimTokens`.
+This happens when the callback fails for a reason other than gas. There are two cases.
+
+* Only the tip fails. Examples: the fee formula overflows because the multiplier is huge,
+  or the token refuses a transfer to the runner.
+  A direct relay on the bridge (`safeExecuteSignaturesWithAutoGasLimit(message, signatures)` on the bridge, not on the router)
+  pays no tip, so it pays the recipient in full.
+  If the message already stranded, a public `recover(message, signatures)` pays it in full the same way.
+  A recovery through the entry that names a validator runner fails again on the tip.
+* The payout itself fails, for example data the router cannot read.
+  A direct relay on the bridge records success, but the tokens strand in the router.
+  Recovery fails for the same reason the callback failed, so only the owner can release the tokens with `claimTokens`.
 
 ### Combinations the interface must refuse
 
@@ -153,16 +186,32 @@ Only the owner's `claimTokens` can release them.
   The router accepts callbacks only from its mediator, and recovery reverts `WrongExecutor`.
 * A plain transfer to the router with no data (`relayTokens` instead of `relayTokensAndCall`).
   The mediator sends the tokens but never calls the router, and recovery reverts `UnsupportedSelector`.
+* `relayTokensAndCall` to the router with empty data.
+  The mediator still calls the router, with empty data. The router cannot decode it,
+  so the delivery strands (or the entry reverts `DeliveryNotCompleted`), and recovery reverts while decoding too.
 * PulseChain's copy of WETH (it has the same address as WETH on Ethereum) with the 20-byte legacy data form (a bare recipient address).
   The mediator delivers its bridged copy, not real WETH, and the legacy form only unwraps real WETH.
   The router reverts `LegacyFormRequiresWrappedNative(token)`.
   Use the fee director data form instead. It pays the bridged copy as a token, never as ether.
 
-### Validator rotation
+### Validator rotation and the signature threshold
 
 Recovery checks the signatures against the validator set that is live when recovery runs.
 When validators rotate, a strand signed only by validators that left can no longer be recovered.
-Only the owner's `claimTokens` can release it. Recover strands soon after they happen.
+Raising `requiredSignatures` on the bridge has the same effect on a strand signed by fewer validators than the new threshold.
+In both cases only the owner's `claimTokens` can release it. Recover strands soon after they happen.
+
+### Anyone can strand a delivery
+
+Anyone holding a signed message can relay it with `executeSignatures` or `safeExecuteSignaturesWithGasLimit` on the bridge,
+with too little gas for the router's callback. The mediator swallows the failed callback, so the tokens strand in the router.
+Such a strand can be recovered. A mainnet fork test strands a delivery this way with `safeExecuteSignaturesWithGasLimit`
+and recovers it through the entry, and the runner earns the tip.
+
+### Ether sent to the router
+
+The router accepts ether only from the wrapped-coin contract (when it unwraps) and through `wrapAndRelayTokens` and `relayTokensAndCall` on the router, which wrap it and send it to the other chain.
+The entry, `onTokenBridged`, and the owner setters revert when sent ether.
 
 ### Recipients that need much gas to receive ether
 
