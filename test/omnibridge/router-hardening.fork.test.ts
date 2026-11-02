@@ -59,7 +59,7 @@ const mediatorAbi = [
     'function mediatorContractOnOtherSide() view returns (address)',
     'function bridgeContract() view returns (address)',
 ]
-const erc20Abi = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']
+const erc20Abi = ['function balanceOf(address) view returns (uint256)']
 const routerInterface = new ethers.Interface([
     'function onTokenBridged(address _token, uint256 _value, bytes _data)',
 ])

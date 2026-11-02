@@ -934,19 +934,10 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
         // Not for us: `processed` says nothing about this message, so the bridge
         // answers instead. One bridge read, still before the courier slot write
         // and the signature check.
-        if (!deliversToThisRouter && _isRelayedByBridge(messageIdentifier)) {
+        if (!deliversToThisRouter && _arbitraryMessageBridge().relayedMessages(messageIdentifier)) {
             return DeliveryOutcome.AlreadyRelayedForAnotherRecipient;
         }
         return _runAttributedEntry(courier, entryGas, messageIdentifier, deliversToThisRouter, _data, _signatures);
-    }
-
-    /**
-     * @dev Whether the bridge has already relayed the message. Reads one flag
-     * from the bridge and writes nothing.
-     * @param messageIdentifier the identifier parsed from the message
-     */
-    function _isRelayedByBridge(bytes32 messageIdentifier) internal view returns (bool) {
-        return _arbitraryMessageBridge().relayedMessages(messageIdentifier);
     }
 
     /**

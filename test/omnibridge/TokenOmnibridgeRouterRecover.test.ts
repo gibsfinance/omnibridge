@@ -963,15 +963,13 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             /**
              * The most gas, transaction base cost and calldata included, this loser may use. It makes one
              * bridge read where the loser above makes a storage read, so it pays more. Measured at 42,208
-             * (this mediator) and 38,230 (another executor). The processed-first order spent 45,349 and
-             * 41,584; before the early exit, the same call wrote the courier and entry slots and ran the full
-             * recovery checks, signatures included, before it reverted: far above this bound.
+             * (this mediator) and 38,230 (another executor).
              */
             const LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING = 45_000n
             /**
              * The most execution gas, intrinsic cost excluded, this loser may use: one decode of the inner
              * call and one bridge read, no storage read of this router. Measured at 14,668 (this mediator)
-             * and 12,646 (another executor). The processed-first order spent 17,785 and 16,000.
+             * and 12,646 (another executor).
              */
             const LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING = 15_500n
 
