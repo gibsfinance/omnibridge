@@ -762,6 +762,49 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await hookToken.balanceOf(secondRecipient)).to.equal(value)
             expect(await hookToken.balanceOf(runner)).to.equal(tip)
         })
+
+        // A recovery that names a runner who is not a validator must still hold the entry's own guard (the
+        // runner slot) for the whole call. If the slot went idle, a payout recipient could start a second,
+        // independent entry run in the middle of the first one.
+        it('a non-validator recovery keeps the entry guard: a recipient re-entering the entry is refused, and no tip is paid', async () => {
+            const nonValidatorRunner = signers[6]
+            const validatorRunner = signers[4]
+            await router.connect(owner).setValidatorStatus(validatorRunner.address, true)
+            expect(await router.isValidator(nonValidatorRunner.address)).to.equal(false)
+            const hookToken = await (await hre.ethers.getContractFactory('MockTransferHookToken')).deploy()
+            const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
+            const tip = value / 10n
+
+            // the outer strand: a fixed-tip hook token delivery to the re-entering recipient
+            const outerId = nextMessageId()
+            const outerCall = ethers.concat([
+                mediator.interface.getFunction('handleNativeTokensAndCall')!.selector,
+                coder.encode(['address', 'address', 'uint256', 'bytes'], [hookToken.target, router.target, value, feeDirector(await recoverer.getAddress(), 0b0001n, tip)]),
+            ])
+            await hookToken.mint(router, value)
+            await amb.executeMessageCall(token, router, token.interface.encodeFunctionData('deposit'), outerId, 100_000n)
+            const outerMessage = buildMessage({ messageId: outerId, executor: mediator.target as string, innerCall: outerCall })
+
+            // the re-entrant call: a fresh, harmless message through the entry, naming a real validator, so
+            // nothing but the entry guard can refuse it
+            const innerId = nextMessageId()
+            const innerMessage = buildMessage({ messageId: innerId, executor: token.target as string, innerCall: token.interface.encodeFunctionData('deposit') })
+            await recoverer.armEntry(router, validatorRunner.address, innerMessage, '0x')
+
+            await router
+                .connect(stranger)
+                .safeExecuteSignaturesWithAutoGasLimit(nonValidatorRunner.address, outerMessage, await sign(outerMessage, [validators[0], validators[1]]))
+
+            expect(await router.processed(outerId)).to.equal(true)
+            expect(await recoverer.reentrantCallMade()).to.equal(true)
+            expect(await recoverer.reentrantCallSucceeded(), 'the re-entrant entry call is refused').to.equal(false)
+            expect(await recoverer.reentrantCallRevertData()).to.equal(router.interface.getError('ReentrancyGuard')!.selector)
+            expect(await amb.relayedMessages(innerId), 'the inner message never ran').to.equal(false)
+            expect(await hookToken.balanceOf(recoverer), 'the recipient is paid in full').to.equal(value)
+            expect(await hookToken.balanceOf(nonValidatorRunner), 'no tip to the non-validator').to.equal(0n)
+            expect(await hookToken.balanceOf(validatorRunner), 'no tip to anyone').to.equal(0n)
+            expect(await hre.ethers.provider.getStorage(router, await router.RUNNER_SLOT()), 'the guard is released afterwards').to.equal(ethers.toBeHex(1n, 32))
+        })
     })
 
     // The fresh-delivery branch of the single entry cannot hold the reentrancy guard: the bridge call

@@ -181,13 +181,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     bytes32 public constant RUNNER_SLOT = keccak256(abi.encode("omnibridgerouter.runner"));
 
     /**
-     * @dev The runner slot's idle value: no runner attributed, so the shared
-     * distribution pays no tip. It matches the reentrancy guard's not-entered
-     * sentinel, which is what the slot resets to after each attributed call.
-     */
-    uint256 private constant _IDLE_RUNNER = 1;
-
-    /**
      * @dev The storage slot that holds the identifier of the message the single
      * entry {safeExecuteSignaturesWithAutoGasLimit} is handling right now. A
      * payout earns the runner's tip only when its own message identifier equals
@@ -281,7 +274,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * stranded delivery finished through the single entry pays the runner the
      * same tip a fresh delivery would, which gives a relayer a reason to finish
      * a strand. A public {recover} call, a non-validator recovery (whose runner
-     * slot the entry cleared), or the payout of any other message that runs
+     * address the entry cleared), or the payout of any other message that runs
      * while the entry is busy pays the recipient in full.
      * @param token the local token to pay out
      * @param value the amount to pay out, split between recipient and tip
@@ -498,10 +491,12 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @dev The runner word (entry gas in the low 96 bits, runner address above)
      * that earns the delivery tip on the payout of `messageIdentifier`, or zero
      * when no one does. A runner earns the tip only when all three hold: the
-     * single entry has a runner attributed, the entry is handling this very
-     * message, and the identifier is known (not zero). A public {recover} call,
-     * or any payout of a different message that runs while the entry is busy,
-     * therefore pays no tip.
+     * single entry has a runner attributed (a non-zero runner address), the
+     * entry is handling this very message, and the identifier is known (not
+     * zero). A public {recover} call, a non-validator recovery (the entry keeps
+     * its gas but clears the address), or any payout of a different message
+     * that runs while the entry is busy, therefore pays no tip. The idle slot
+     * value 1 also has a zero address.
      * @param messageIdentifier the identifier of the message being paid: the
      * bridge's live identifier on a fresh delivery, the parsed identifier on a
      * recovery
@@ -514,7 +509,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             return 0;
         }
         uint256 runner = StorageSlot.getUint256Slot(RUNNER_SLOT).value;
-        if (runner <= _IDLE_RUNNER) {
+        if (runner >> 96 == 0) {
             return 0;
         }
         return runner;
@@ -972,10 +967,13 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
             // Recovery is permissionless, but the tip is earned only by a known
             // validator (the same gate the fresh delivery applies). A caller who
             // is not a validator may still finish the delivery; clearing the
-            // runner slot leaves them no tip, so the shared distribution pays the
-            // recipient in full.
+            // runner address leaves them no tip, so the shared distribution pays
+            // the recipient in full. The entry gas stays in the low 96 bits, so
+            // the slot stays above the guard's not-entered value and the entry's
+            // reentrancy guard stays engaged for the rest of the call.
             if (!runnerIsValidator) {
-                StorageSlot.getUint256Slot(RUNNER_SLOT).value = _IDLE_RUNNER;
+                StorageSlot.Uint256Slot storage runnerSlot = StorageSlot.getUint256Slot(RUNNER_SLOT);
+                runnerSlot.value = uint256(uint96(runnerSlot.value));
             }
             return _recoverWithReentrancyGuard(_data, _signatures);
         }
