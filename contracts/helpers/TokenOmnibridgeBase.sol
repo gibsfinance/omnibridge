@@ -142,6 +142,14 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
      * would record nothing, and a later {recover} could pay the message again.
      */
     error ExecutingMessageIdentifierMissing();
+    /**
+     * @dev {onTokenBridged} ran for a message this router has already paid.
+     * The live bridge never calls the mediator twice for one identifier, so a
+     * real delivery never hits this; the check makes {onTokenBridged} refuse a
+     * second payment on its own instead of relying on the bridge for that.
+     * @param messageId the Arbitrary Message Bridge message identifier
+     */
+    error MessageAlreadyProcessed(bytes32 messageId);
 
     /**
      * @dev What a call to the single entry or to {recover} did. A relayer that
@@ -286,9 +294,11 @@ contract TokenOmnibridgeBase is ICourierFilter, OwnableModule, Claimable, Reentr
         // Record the message that is executing now, so a later {recover} can
         // never pay this message a second time. The read is strict: a zero
         // identifier reverts {ExecutingMessageIdentifierMissing} rather than pay
-        // without a record. A delivery that later reverts unwinds this write
-        // along with everything else.
+        // without a record. A message already paid reverts
+        // {MessageAlreadyProcessed}. A delivery that later reverts unwinds this
+        // write along with everything else.
         bytes32 messageIdentifier = _currentMessageId();
+        if (processed[messageIdentifier]) revert MessageAlreadyProcessed(messageIdentifier);
         _markProcessed(messageIdentifier);
         _distributeDelivery(_token, _payableAmount(_token, _value), _data, messageIdentifier);
     }

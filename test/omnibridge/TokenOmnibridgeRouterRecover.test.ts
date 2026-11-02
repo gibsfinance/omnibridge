@@ -1238,6 +1238,33 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         })
     })
 
+    // The live bridge records a message's call status only after the mediator call returns, so it never
+    // calls the mediator twice for one identifier. onTokenBridged must not lean on that: a bridge (or a
+    // mediator) that delivers an identifier this router already paid must be refused, not paid again
+    // from another user's strand.
+    describe('a delivery of a message this router already paid', () => {
+        it('reverts MessageAlreadyProcessed and pays nothing more', async () => {
+            const stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
+            const stubRouter = await factoryForRouter.deploy(stubMediator, token, owner)
+            const recipient = signers[7]
+            const messageId = nextMessageId()
+            // two deliveries' worth, so a second payment would take another strand's tokens
+            await token.deposit({ value: 2n * value })
+            await token.transfer(stubRouter, 2n * value)
+            const delivery = stubRouter.interface.encodeFunctionData('onTokenBridged', [token.target, value, feeDirector(recipient.address, 0n)])
+
+            await stubMediator.execWithMessageId(stubRouter, delivery, messageId)
+            expect(await token.balanceOf(recipient)).to.equal(value)
+            expect(await stubRouter.processed(messageId)).to.equal(true)
+
+            await expect(stubMediator.execWithMessageId(stubRouter, delivery, messageId))
+                .to.be.revertedWithCustomError(stubRouter, 'MessageAlreadyProcessed')
+                .withArgs(messageId)
+            expect(await token.balanceOf(recipient), 'paid once').to.equal(value)
+            expect(await token.balanceOf(stubRouter), 'the other strand is intact').to.equal(value)
+        })
+    })
+
     // Two checks that no public path can reach today. Each test proves the check still does its job,
     // so a later change that drops the check in front of it cannot go unnoticed.
     describe('defence in depth', () => {
