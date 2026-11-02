@@ -1087,4 +1087,106 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'NotForThisRouter')
         })
     })
+
+    // Only the tip can fail: here the gas-mode fee formula overflows (a huge multiplier), so every path
+    // that pays a tip reverts. A path that pays no tip (the direct bridge relay, or a public recover())
+    // pays the recipient in full, so the funds never depend on the tip.
+    describe('a delivery where only the tip fails', () => {
+        const overflowingTip = (recipient: string) => feeDirector(recipient, 0n, value, ethers.MaxUint256)
+
+        it('fresh through the entry reverts DeliveryNotCompleted; the direct bridge relay then pays in full with no tip', async () => {
+            const runner = signers[4]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: overflowingTip(user.address) })
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, '0x'))
+                .to.be.revertedWithCustomError(router, 'DeliveryNotCompleted')
+                .withArgs(messageId)
+            expect(await amb.relayedMessages(messageId), 'the message stays unrelayed').to.equal(false)
+
+            const userBefore = await token.balanceOf(user)
+            await deliver(messageId, innerCall, 3_000_000n)
+            expect((await token.balanceOf(user)) - userBefore, 'paid in full').to.equal(value)
+            expect(await token.balanceOf(runner), 'no tip').to.equal(0n)
+            expect(await token.balanceOf(router)).to.equal(0n)
+            expect(await router.processed(messageId)).to.equal(true)
+        })
+
+        it('a strand: recovery through the entry with a validator runner reverts on the tip; recover() pays in full with no tip', async () => {
+            const runner = signers[4]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const messageId = nextMessageId()
+            const innerCall = handleCall({ data: overflowingTip(user.address) })
+            await strand(messageId, innerCall)
+            const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+            const signatures = await sign(message, [validators[0], validators[1]])
+
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures)).to.be.revertedWithPanic(0x11)
+            expect(await router.processed(messageId)).to.equal(false)
+            expect(await token.balanceOf(router), 'still stranded').to.equal(value)
+
+            const userBefore = await token.balanceOf(user)
+            await expect(router.connect(stranger).recover(message, signatures))
+                .to.emit(router, 'DeliveryRecovered')
+                .withArgs(messageId, token.target, router.target, value)
+            expect((await token.balanceOf(user)) - userBefore, 'paid in full').to.equal(value)
+            expect(await token.balanceOf(runner), 'no tip').to.equal(0n)
+            expect(await token.balanceOf(router)).to.equal(0n)
+        })
+    })
+
+    // Two checks that no public path can reach today. Each test proves the check still does its job,
+    // so a later change that drops the check in front of it cannot go unnoticed.
+    describe('defence in depth', () => {
+        /** The entry records the message it handles here: keccak256(abi.encode("omnibridgerouter.entryMessage")). */
+        const ENTRY_MESSAGE_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.entryMessage']))
+        /** The slot's idle value: no entry is running. */
+        const IDLE_ENTRY_MESSAGE = ethers.toBeHex(1n, 32)
+
+        it('the entry returns its message slot to idle after a fresh delivery and after a recovery', async () => {
+            const runner = signers[4]
+            await router.connect(owner).setValidatorStatus(runner.address, true)
+            expect(await hre.ethers.provider.getStorage(router, ENTRY_MESSAGE_SLOT), 'idle from the constructor').to.equal(IDLE_ENTRY_MESSAGE)
+
+            const freshId = nextMessageId()
+            const freshMessage = buildMessage({ messageId: freshId, executor: mediator.target as string, innerCall: handleCall({ data: feeDirector(user.address, 0n) }) })
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, freshMessage, '0x')
+            expect(await router.processed(freshId)).to.equal(true)
+            expect(await hre.ethers.provider.getStorage(router, ENTRY_MESSAGE_SLOT), 'idle after a fresh delivery').to.equal(IDLE_ENTRY_MESSAGE)
+
+            const strandId = nextMessageId()
+            const strandCall = handleCall({ data: feeDirector(user.address, 0n) })
+            await strand(strandId, strandCall)
+            const strandMessage = buildMessage({ messageId: strandId, executor: mediator.target as string, innerCall: strandCall })
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, strandMessage, await sign(strandMessage, [validators[0], validators[1]]))
+            expect(await router.processed(strandId)).to.equal(true)
+            expect(await hre.ethers.provider.getStorage(router, ENTRY_MESSAGE_SLOT), 'idle after a recovery').to.equal(IDLE_ENTRY_MESSAGE)
+        })
+
+        it('the recovery body alone refuses a message already paid, even without the outer processed check', async () => {
+            const harness = await (await hre.ethers.getContractFactory('RouterRecoveryBodyHarness')).deploy(mediator, token, owner)
+            /** Strands `value` of the wrapped token in the harness for a message to `recipient`. */
+            const strandInHarness = async (recipient: string) => {
+                const messageId = nextMessageId()
+                const innerCall = handleCall({ recipient: harness.target as string, data: feeDirector(recipient, 0n) })
+                await token.deposit({ value })
+                await token.transfer(harness, value)
+                await amb.executeMessageCall(token, harness, token.interface.encodeFunctionData('deposit'), messageId, 100_000n)
+                const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
+                return { messageId, message, signatures: await sign(message, [validators[0], validators[1]]) }
+            }
+            const firstRecipient = signers[7]
+            // a second strand, so a second payment of the first message would take another user's funds
+            const first = await strandInHarness(firstRecipient.address)
+            await strandInHarness(signers[8].address)
+            await harness.recover(first.message, first.signatures)
+            expect(await token.balanceOf(firstRecipient)).to.equal(value)
+
+            expect(await harness.recoverWithoutOuterProcessedCheck.staticCall(first.message, first.signatures)).to.equal(Outcome.AlreadyHandled)
+            await expect(harness.recoverWithoutOuterProcessedCheck(first.message, first.signatures)).to.not.emit(harness, 'DeliveryRecovered')
+            expect(await token.balanceOf(firstRecipient), 'no second payment').to.equal(value)
+            expect(await token.balanceOf(harness), "the other user's strand is intact").to.equal(value)
+        })
+    })
 })
