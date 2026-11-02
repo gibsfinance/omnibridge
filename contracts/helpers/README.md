@@ -95,22 +95,22 @@ They describe what the router on the foreign side (Ethereum, Binance Smart Chain
 
 ### One entry for every delivery
 
-Call `safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures)` on the router.
+Call `safeExecuteSignaturesWithAutoGasLimit(courier, message, signatures)` on the router.
 The router picks the path:
 
 * A message the bridge has not relayed yet is a fresh delivery. The router passes it to the bridge.
-  The named `runner` must be a validator, or the call reverts `RunnerNotValidator(runner)`.
+  The named `courier` must be on the router's courier list, or the call reverts `NotACourier(courier)`.
 * A message the bridge already relayed, but whose tokens stranded in the router, is a recovery.
-  Anyone may name any runner. Only a runner that is a validator earns the tip.
+  Anyone may name any address. Only a listed courier earns the tip.
 
-The caller does not have to be the runner. The tip goes to the runner.
+The caller does not have to be the courier. The tip goes to the courier.
 The tip is bound to the message the call handles. It is paid only on that message's own fresh delivery or recovery.
 A call to `recover(message, signatures)` never pays a tip.
 
-### Add runners before the first delivery
+### Add couriers before the first delivery
 
-The router's validator list starts empty.
-Until the owner adds runners with `setValidatorStatus(runner, true)`, every fresh delivery through the entry reverts `RunnerNotValidator(runner)`.
+The router's courier list starts empty.
+Until the owner adds couriers with `setCourierStatus(courier, true)`, every fresh delivery through the entry reverts `NotACourier(courier)`.
 Recoveries through the entry still work, but pay no tip.
 
 ### Relay each message through the router it names
@@ -172,7 +172,7 @@ These faults revert:
 * On `recover` only: a wrong executor, a message for another recipient, and a message the bridge never relayed.
   Through the entry, a message the bridge never relayed is not a fault. It is a fresh delivery.
   Through the entry, an already relayed message for someone else returns `AlreadyRelayedForAnotherRecipient`.
-* On a fresh delivery through the entry: a runner that is not a validator (`RunnerNotValidator`),
+* On a fresh delivery through the entry: an address that is not a courier (`NotACourier`),
   and a delivery to this router that did not complete (`DeliveryNotCompleted`, see below).
 
 ### Gas for a fresh delivery
@@ -192,11 +192,11 @@ The tokens stay with the mediator and the message stays unrelayed.
 This happens when the callback fails for a reason other than gas. There are two cases.
 
 * Only the tip fails. Examples: the fee formula overflows because the multiplier is huge,
-  or the token refuses a transfer to the runner.
+  or the token refuses a transfer to the courier.
   A direct relay on the bridge (`safeExecuteSignaturesWithAutoGasLimit(message, signatures)` on the bridge, not on the router)
   pays no tip, so it pays the recipient in full.
   If the message already stranded, a public `recover(message, signatures)` pays it in full the same way.
-  A recovery through the entry that names a validator runner fails again on the tip.
+  A recovery through the entry that names a listed courier fails again on the tip.
 * The payout itself fails, for example data the router cannot read.
   A direct relay on the bridge records success, but the tokens strand in the router.
   Recovery fails for the same reason the callback failed, so only the owner can release the tokens with `claimTokens`.
@@ -230,7 +230,7 @@ In both cases only the owner's `claimTokens` can release it. Recover strands soo
 Anyone holding a signed message can relay it with `executeSignatures` or `safeExecuteSignaturesWithGasLimit` on the bridge,
 with too little gas for the router's callback. The mediator swallows the failed callback, so the tokens strand in the router.
 Such a strand can be recovered. A mainnet fork test strands a delivery this way with `safeExecuteSignaturesWithGasLimit`
-and recovers it through the entry, and the runner earns the tip.
+and recovers it through the entry, and the courier earns the tip.
 
 ### Ether sent to the router
 

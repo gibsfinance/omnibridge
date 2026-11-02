@@ -1,7 +1,7 @@
 import './deploy-wethomnibridgerouterv2'
 import './deploy-wbnbomnibridgerouter'
 import './deploy-tokenomnibridgerouter'
-import './set-validator'
+import './set-courier'
 import './check-on-token-bridge'
 import './parse-calldata'
 import './transfer-ownership'

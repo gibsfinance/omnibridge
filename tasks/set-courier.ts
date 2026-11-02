@@ -8,10 +8,10 @@ type Input = {
   remove: boolean;
 }
 
-task('set-validator', 'sets the status of an address on the contract')
-  .addFlag('add', 'adds the given address to the validator set')
-  .addFlag('remove', 'removes the given address from the validator set')
-  .addParam('address', 'the address to add or remove from the validator set')
+task('set-courier', 'adds an address to, or removes it from, the router courier list')
+  .addFlag('add', 'adds the given address to the courier list')
+  .addFlag('remove', 'removes the given address from the courier list')
+  .addParam('address', 'the address to add or remove from the courier list')
   .addParam('router', 'the router to operate on')
   .setAction(async (args: Input, hre: HardhatRuntimeEnvironment) => {
     const tokenOmnibridgeRouter = await hre.ethers.getContractAt('contracts/helpers/TokenOmnibridgeRouter.sol:TokenOmnibridgeRouter', args.router)
@@ -19,7 +19,7 @@ task('set-validator', 'sets the status of an address on the contract')
     status = status || (args.remove === true ? false : null)
     if (status === null) throw new Error('no status change provided')
     const inputs = [args.address, status] as const
-    const statusTx = await tokenOmnibridgeRouter.setValidatorStatus(...inputs)
-    console.log('tokenOmnibridgeRouter.setValidatorStatus(%o, %o) => %o', ...inputs, statusTx.hash)
+    const statusTx = await tokenOmnibridgeRouter.setCourierStatus(...inputs)
+    console.log('tokenOmnibridgeRouter.setCourierStatus(%o, %o) => %o', ...inputs, statusTx.hash)
     await statusTx.wait()
   })

@@ -29,9 +29,11 @@ const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
 const WBNB = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'
 
 const coder = ethers.AbiCoder.defaultAbiCoder()
-// The router keeps its delivery state in this slot: keccak256(abi.encode("omnibridgerouter.runner")).
+// The new router keeps its delivery state in this slot: keccak256(abi.encode("omnibridgerouter.courier")).
 // The value is the abi encoding of a string, not the raw bytes, so it is built the same way here.
-const RUNNER_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.runner']))
+const COURIER_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.courier']))
+// The OLD deployed router keeps the same state under the key it was deployed with. That key is fixed on chain.
+const OLD_ROUTER_COURIER_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.runner']))
 // The entry records the identifier of the message it handles here: keccak256(abi.encode("omnibridgerouter.entryMessage")).
 // A payout earns the tip only when its own message identifier equals this word. The constructor sets it to 1 (idle).
 const ENTRY_MESSAGE_SLOT = ethers.keccak256(coder.encode(['string'], ['omnibridgerouter.entryMessage']))
@@ -46,7 +48,7 @@ const percentFeeBit = 0b1000n
 
 const bridgeAbi = [
     'function safeExecuteSignaturesWithAutoGasLimit(bytes _data, bytes _signatures)',
-    'function safeExecuteSignaturesWithAutoGasLimit(address runner, bytes _data, bytes _signatures)',
+    'function safeExecuteSignaturesWithAutoGasLimit(address courier, bytes _data, bytes _signatures)',
     'function relayedMessages(bytes32) view returns (bool)',
     'function messageCallStatus(bytes32) view returns (bool)',
 ]
@@ -59,7 +61,7 @@ const mediatorAbi = [
 const erc20Abi = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)']
 const routerInterface = new ethers.Interface([
     'function onTokenBridged(address _token, uint256 _value, bytes _data)',
-    'function RUNNER_SLOT() view returns (bytes32)',
+    'function COURIER_SLOT() view returns (bytes32)',
 ])
 const mediatorInterface = new ethers.Interface(mediatorAbi)
 const bridgeInterface = new ethers.Interface(bridgeAbi)
@@ -163,12 +165,12 @@ const decodeStrand = async (realCase: RealCase): Promise<DecodeResult> => {
     if (!transaction) return { reason: 'no endpoint returned the transaction' }
     let message: string
     const direct = bridgeInterface.getFunction('safeExecuteSignaturesWithAutoGasLimit(bytes,bytes)')!
-    const viaRunner = bridgeInterface.getFunction('safeExecuteSignaturesWithAutoGasLimit(address,bytes,bytes)')!
+    const viaCourier = bridgeInterface.getFunction('safeExecuteSignaturesWithAutoGasLimit(address,bytes,bytes)')!
     const selector = transaction.data.slice(0, 10)
     if (selector === direct.selector) {
         message = bridgeInterface.decodeFunctionData(direct, transaction.data)[0]
-    } else if (selector === viaRunner.selector) {
-        message = bridgeInterface.decodeFunctionData(viaRunner, transaction.data)[1]
+    } else if (selector === viaCourier.selector) {
+        message = bridgeInterface.decodeFunctionData(viaCourier, transaction.data)[1]
     } else {
         return { reason: `unknown outer selector ${selector}` }
     }
@@ -231,7 +233,7 @@ type Outcome = {
     endRecipientOtherAssetGain: bigint
     routerTokenGain: bigint
     routerNativeGain: bigint
-    runnerGain: bigint
+    courierGain: bigint
     receiptBlockBaseFee: bigint
 }
 
@@ -255,7 +257,7 @@ const assertDeliveredInFull = (outcome: Outcome, value: bigint) => {
     expect(outcome.endRecipientOtherAssetGain, 'nothing arrived in the other asset form').to.equal(0n)
     expect(outcome.routerTokenGain, 'the router keeps no tokens').to.equal(0n)
     expect(outcome.routerNativeGain, 'the router keeps no native coin').to.equal(0n)
-    expect(outcome.runnerGain, 'no fee went to a runner').to.equal(0n)
+    expect(outcome.courierGain, 'no fee went to a courier').to.equal(0n)
 }
 
 describe('Router hardening against real strands, on an anvil fork', function () {
@@ -286,21 +288,21 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                 let spoof!: ethers.Contract
                 let tokenContract!: ethers.Contract
                 let toNative = false
-                let oldRunnerSlotValue = 0n
+                let oldCourierSlotValue = 0n
                 // The identifier the stand-in bridge reports while it delivers.
                 const spoofMessageId = ethers.keccak256(ethers.toUtf8Bytes(`hardening-${realCase.id}`))
 
                 /** Drives the real mediator into a router and measures every balance that matters. */
                 const drive = async (routerAddress: string, options: { gasPrice?: bigint } = {}): Promise<Outcome> => {
                     const strand = decoded!
-                    const runnerAddress = ethers.getAddress('0x' + 'ab'.repeat(20))
+                    const courierAddress = ethers.getAddress('0x' + 'ab'.repeat(20))
                     const readAssets = async () => ({
                         recipientToken: (await tokenContract.balanceOf(strand.feeDirector.recipient)) as bigint,
                         recipientNative: await hre.ethers.provider.getBalance(strand.feeDirector.recipient),
                         routerToken: (await tokenContract.balanceOf(routerAddress)) as bigint,
                         routerNative: await hre.ethers.provider.getBalance(routerAddress),
-                        runnerToken: (await tokenContract.balanceOf(runnerAddress)) as bigint,
-                        runnerNative: await hre.ethers.provider.getBalance(runnerAddress),
+                        courierToken: (await tokenContract.balanceOf(courierAddress)) as bigint,
+                        courierNative: await hre.ethers.provider.getBalance(courierAddress),
                     })
                     const before = await readAssets()
                     // The forked chain's base fee decays towards zero on a quiet node. Pin a realistic one so the
@@ -330,8 +332,8 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     const block = await hre.ethers.provider.getBlock(receipt.blockNumber)
                     const recipientGainToken = after.recipientToken - before.recipientToken
                     const recipientGainNative = after.recipientNative - before.recipientNative
-                    const runnerGainToken = after.runnerToken - before.runnerToken
-                    const runnerGainNative = after.runnerNative - before.runnerNative
+                    const courierGainToken = after.courierToken - before.courierToken
+                    const courierGainNative = after.courierNative - before.courierNative
                     return {
                         callbackFrames: callbacks.length,
                         callbackReverted: callbacks.length > 0 && Boolean(callbacks[0].error),
@@ -340,7 +342,7 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                         endRecipientOtherAssetGain: toNative ? recipientGainToken : recipientGainNative,
                         routerTokenGain: after.routerToken - before.routerToken,
                         routerNativeGain: after.routerNative - before.routerNative,
-                        runnerGain: toNative ? runnerGainNative : runnerGainToken,
+                        courierGain: toNative ? courierGainNative : courierGainToken,
                         receiptBlockBaseFee: block?.baseFeePerGas ?? 0n,
                     }
                 }
@@ -393,11 +395,11 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     await deployed.waitForDeployment()
                     newRouter = await deployed.getAddress()
                     // The slot constant must be the one the router really uses, or every state edit says nothing.
-                    expect(await deployed.RUNNER_SLOT()).to.equal(RUNNER_SLOT)
+                    expect(await deployed.COURIER_SLOT()).to.equal(COURIER_SLOT)
                     // The entry message slot is private; its idle value 1 from the constructor proves the slot is right.
                     expect(BigInt(await hre.ethers.provider.getStorage(newRouter, ENTRY_MESSAGE_SLOT))).to.equal(1n)
 
-                    oldRunnerSlotValue = BigInt(await hre.ethers.provider.getStorage(decoded.oldRouter, RUNNER_SLOT))
+                    oldCourierSlotValue = BigInt(await hre.ethers.provider.getStorage(decoded.oldRouter, OLD_ROUTER_COURIER_SLOT))
                 })
 
                 const guard = (context: Mocha.Context) => {
@@ -418,7 +420,7 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                         `      [#${realCase.id}] end recipient ${strand.feeDirector.recipient}, settings ${strand.feeDirector.settings}, ` +
                             `limit ${strand.feeDirector.limit}, multiplier ${strand.feeDirector.multiplier}, unwrap to native ${toNative}`,
                     )
-                    console.log(`      [#${realCase.id}] old router RUNNER_SLOT leftover at this state: ${oldRunnerSlotValue}`)
+                    console.log(`      [#${realCase.id}] old router courier slot leftover at this state: ${oldCourierSlotValue}`)
                     expect(strand.transactionTarget.toLowerCase(), 'the transaction went straight to the bridge').to.equal(
                         bridge.toLowerCase(),
                     )
@@ -430,96 +432,96 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     guard(this)
                     const strand = decoded!
                     // The leftover value 1 is the post-delivery idle sentinel. The deployed router treats it as
-                    // a named runner and underflows. Both states must show Panic 0x11.
-                    for (const [name, runnerState] of [
-                        ['leftover as found', oldRunnerSlotValue],
+                    // a named courier and underflows. Both states must show Panic 0x11.
+                    for (const [name, courierState] of [
+                        ['leftover as found', oldCourierSlotValue],
                         ['post-delivery sentinel 1', 1n],
                     ] as const) {
                         const outcome = await isolated(async () => {
-                            await writeStorage(strand.oldRouter, RUNNER_SLOT, runnerState)
+                            await writeStorage(strand.oldRouter, OLD_ROUTER_COURIER_SLOT, courierState)
                             return drive(strand.oldRouter)
                         })
                         console.log(
-                            `      [#${realCase.id}] OLD router, RUNNER_SLOT ${name}: callback reverted=${outcome.callbackReverted} ` +
+                            `      [#${realCase.id}] OLD router, courier slot ${name}: callback reverted=${outcome.callbackReverted} ` +
                                 `output=${outcome.callbackOutput.slice(0, 74)} stranded=${outcome.routerTokenGain} recipient gain=${outcome.endRecipientGain}`,
                         )
                         assertStrandedByUnderflow(outcome, strand.value)
                     }
                 })
 
-                it('CONTROL BASELINE: the real OLD router delivers when RUNNER_SLOT is fresh 0, so only the sentinel breaks it', async function () {
+                it('CONTROL BASELINE: the real OLD router delivers when its courier slot is fresh 0, so only the sentinel breaks it', async function () {
                     guard(this)
                     const strand = decoded!
                     const outcome = await isolated(async () => {
-                        await writeStorage(strand.oldRouter, RUNNER_SLOT, 0n)
+                        await writeStorage(strand.oldRouter, OLD_ROUTER_COURIER_SLOT, 0n)
                         return drive(strand.oldRouter)
                     })
                     console.log(
-                        `      [#${realCase.id}] OLD router, RUNNER_SLOT fresh 0: reverted=${outcome.callbackReverted} ` +
+                        `      [#${realCase.id}] OLD router, courier slot fresh 0: reverted=${outcome.callbackReverted} ` +
                             `recipient gain=${outcome.endRecipientGain} (value ${strand.value}) router kept=${outcome.routerTokenGain}`,
                     )
                     assertDeliveredInFull(outcome, strand.value)
                 })
 
-                for (const [name, runnerState] of [
+                for (const [name, courierState] of [
                     ['fresh 0', 0n],
                     ['post-delivery sentinel 1', 1n],
                 ] as const) {
-                    it(`FIX: the NEW router delivers the full value with RUNNER_SLOT ${name}`, async function () {
+                    it(`FIX: the NEW router delivers the full value with COURIER_SLOT ${name}`, async function () {
                         guard(this)
                         const strand = decoded!
                         const outcome = await isolated(async () => {
-                            await writeStorage(newRouter, RUNNER_SLOT, runnerState)
+                            await writeStorage(newRouter, COURIER_SLOT, courierState)
                             return drive(newRouter)
                         })
                         console.log(
-                            `      [#${realCase.id}] NEW router, RUNNER_SLOT ${name}: reverted=${outcome.callbackReverted} ` +
+                            `      [#${realCase.id}] NEW router, COURIER_SLOT ${name}: reverted=${outcome.callbackReverted} ` +
                                 `end recipient gain=${outcome.endRecipientGain} (expected ${strand.value}) router kept token=${outcome.routerTokenGain} native=${outcome.routerNativeGain}`,
                         )
                         assertDeliveredInFull(outcome, strand.value)
                     })
                 }
 
-                it('GENUINE RUNNER: the fee path is entered, does not underflow, and takes a sane fee', async function () {
+                it('GENUINE COURIER: the fee path is entered, does not underflow, and takes a sane fee', async function () {
                     guard(this)
                     const strand = decoded!
-                    const runnerAddress = ethers.getAddress('0x' + 'ab'.repeat(20))
+                    const courierAddress = ethers.getAddress('0x' + 'ab'.repeat(20))
                     // This is the value safeExecuteSignaturesWithAutoGasLimit writes: the gas left at entry in
-                    // the low 96 bits and the runner in the high bits. The message gas is the most gas the
+                    // the low 96 bits and the courier in the high bits. The message gas is the most gas the
                     // callback can ever see, so gas used inside the callback is positive and below this number.
                     const entryGas = MESSAGE_GAS
-                    const runnerWord = entryGas | (BigInt(runnerAddress) << 96n)
+                    const courierWord = entryGas | (BigInt(courierAddress) << 96n)
                     const gasPrice = 30_000_000_000n
                     // The entry also records the message it handles. Writing both words is what the entry does.
                     const outcome = await isolated(async () => {
-                        await writeStorage(newRouter, RUNNER_SLOT, runnerWord)
+                        await writeStorage(newRouter, COURIER_SLOT, courierWord)
                         await writeStorage(newRouter, ENTRY_MESSAGE_SLOT, BigInt(spoofMessageId))
                         return drive(newRouter, { gasPrice })
                     }).finally(() =>
                         // The pinned base fee sticks to the node. Put a tiny one back so later blocks stay cheap.
                         rpc('anvil_setNextBlockBaseFeePerGas', [ethers.toBeHex(1_000n)]),
                     )
-                    // A runner word with no entry handling THIS message (the slot left idle) must earn nothing:
-                    // the tip is bound to the message, so an ambient runner never leaks into another payout.
+                    // A courier word with no entry handling THIS message (the slot left idle) must earn nothing:
+                    // the tip is bound to the message, so an ambient courier never leaks into another payout.
                     const unboundOutcome = await isolated(async () => {
-                        await writeStorage(newRouter, RUNNER_SLOT, runnerWord)
+                        await writeStorage(newRouter, COURIER_SLOT, courierWord)
                         return drive(newRouter, { gasPrice })
                     }).finally(() => rpc('anvil_setNextBlockBaseFeePerGas', [ethers.toBeHex(1_000n)]))
-                    expect(unboundOutcome.runnerGain, 'no tip without the entry handling this message').to.equal(0n)
+                    expect(unboundOutcome.courierGain, 'no tip without the entry handling this message').to.equal(0n)
                     expect(unboundOutcome.endRecipientGain, 'the recipient is paid in full instead').to.equal(strand.value)
-                    const fee = outcome.runnerGain
+                    const fee = outcome.courierGain
                     console.log(
-                        `      [#${realCase.id}] genuine runner: reverted=${outcome.callbackReverted} fee to runner=${fee} ` +
+                        `      [#${realCase.id}] genuine courier: reverted=${outcome.callbackReverted} fee to courier=${fee} ` +
                             `recipient gain=${outcome.endRecipientGain} limit=${strand.feeDirector.limit} block base fee=${outcome.receiptBlockBaseFee}`,
                     )
                     expect(outcome.callbackFrames).to.equal(1)
-                    expect(outcome.callbackReverted, 'no revert on a genuine runner delivery').to.equal(false)
+                    expect(outcome.callbackReverted, 'no revert on a genuine courier delivery').to.equal(false)
                     expect(outcome.callbackOutput).to.not.equal(PANIC_UNDERFLOW_OUTPUT)
                     expect(outcome.routerTokenGain, 'router retains nothing').to.equal(0n)
                     expect(outcome.routerNativeGain).to.equal(0n)
                     expect(fee <= strand.feeDirector.limit, 'the fee never exceeds the limit').to.equal(true)
                     expect(fee <= strand.value).to.equal(true)
-                    expect(outcome.endRecipientGain + fee, 'recipient plus runner equals the value').to.equal(strand.value)
+                    expect(outcome.endRecipientGain + fee, 'recipient plus courier equals the value').to.equal(strand.value)
                     if (strand.feeDirector.limit > 0n && strand.feeDirector.multiplier > 0n && outcome.receiptBlockBaseFee > 0n) {
                         // With a limit above zero the fee comes from the gas formula and must be positive.
                         expect(fee > 0n, 'the gas formula produced a fee').to.equal(true)
@@ -542,8 +544,8 @@ describe('Router hardening against real strands, on an anvil fork', function () 
                     guard(this)
                     const strand = decoded!
                     await isolated(async () => {
-                        await writeStorage(strand.oldRouter, RUNNER_SLOT, 1n)
-                        await writeStorage(newRouter, RUNNER_SLOT, 1n)
+                        await writeStorage(strand.oldRouter, OLD_ROUTER_COURIER_SLOT, 1n)
+                        await writeStorage(newRouter, COURIER_SLOT, 1n)
                         const oldOutcome = await drive(strand.oldRouter)
                         const newOutcome = await drive(newRouter)
                         // sanity: each is judged correctly by its own assertion

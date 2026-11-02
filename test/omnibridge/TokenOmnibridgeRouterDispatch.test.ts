@@ -24,12 +24,12 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
         let stubMediator!: any
         let router!: any
         let user!: HardhatEthersSigner
-        let runner!: HardhatEthersSigner
+        let courier!: HardhatEthersSigner
         let sender!: HardhatEthersSigner
 
         const deploy = async () => {
             signers = await hre.ethers.getSigners()
-            ;[owner, user, runner, sender] = signers
+            ;[owner, user, courier, sender] = signers
             token = await (await hre.ethers.getContractFactory('WETH')).deploy()
             stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
             router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(stubMediator, token, owner)
@@ -48,33 +48,33 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
                 innerCall: handleNativeCall({ token: token.target as string, recipient: router.target as string, value: oneEther, data }),
             })
 
-        it('rejects a runner that is not a validator', async () => {
+        it('rejects an address that is not a courier', async () => {
             const message = freshMessage(feeDirector(user.address, percentFlag, oneEther, oneEther / 100n))
-            await expect(router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x')).to.be.revertedWithCustomError(
+            await expect(router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x')).to.be.revertedWithCustomError(
                 router,
-                'RunnerNotValidator',
-            ).withArgs(runner.address)
+                'NotACourier',
+            ).withArgs(courier.address)
             expect(await token.balanceOf(user)).to.equal(0n)
         })
 
-        it('delivers with a runner fee: recipient gets value minus fee, runner gets the fee', async () => {
-            await router.connect(owner).setValidatorStatus(runner, true)
+        it('delivers with a courier fee: recipient gets value minus fee, courier gets the fee', async () => {
+            await router.connect(owner).setCourierStatus(courier, true)
             const fee = oneEther / 100n
             const message = freshMessage(feeDirector(user.address, percentFlag, oneEther, fee))
-            const [userBefore, runnerBefore] = [await token.balanceOf(user), await token.balanceOf(runner)]
-            await router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x')
+            const [userBefore, courierBefore] = [await token.balanceOf(user), await token.balanceOf(courier)]
+            await router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x')
             expect(await token.balanceOf(user)).to.equal(userBefore + oneEther - fee)
-            expect(await token.balanceOf(runner)).to.equal(runnerBefore + fee)
+            expect(await token.balanceOf(courier)).to.equal(courierBefore + fee)
             expect(await token.balanceOf(router)).to.equal(0n)
         })
 
         // "Is this message for us?" comes before "has it already been done?". The stub bridge never marks
         // a message relayed, so a message for someone else under an identifier this router already paid
-        // has no early exit at all: it must go on to the runner check, never return AlreadyHandled.
-        it('a message for another recipient under an identifier this router paid proceeds to the runner check', async () => {
-            await router.connect(owner).setValidatorStatus(runner, true)
+        // has no early exit at all: it must go on to the courier check, never return AlreadyHandled.
+        it('a message for another recipient under an identifier this router paid proceeds to the courier check', async () => {
+            await router.connect(owner).setCourierStatus(courier, true)
             const paid = freshMessage(feeDirector(user.address, 0n))
-            await router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(runner, paid, '0x')
+            await router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(courier, paid, '0x')
             const messageId = ethers.keccak256(ethers.toUtf8Bytes('dispatch-fresh'))
             expect(await router.processed(messageId)).to.equal(true)
             expect(await stubMediator.relayedMessages(messageId)).to.equal(false)
@@ -85,7 +85,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
                 innerCall: handleNativeCall({ token: token.target as string, recipient: user.address, value: oneEther, data: feeDirector(user.address, 0n) }),
             })
             await expect(router.connect(sender).safeExecuteSignaturesWithAutoGasLimit(sender, anotherRecipient, '0x'))
-                .to.be.revertedWithCustomError(router, 'RunnerNotValidator')
+                .to.be.revertedWithCustomError(router, 'NotACourier')
                 .withArgs(sender.address)
         })
 
@@ -117,21 +117,21 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
     // Nothing legitimately sends ether through these: the bridge and the mediator call without value, and
     // the router never forwards value to the bridge. Ether sent to them would only be stuck in the router.
     describe('refuses ether on every function that has no use for it', () => {
-        const nonPayableFunctions = ['safeExecuteSignaturesWithAutoGasLimit', 'onTokenBridged', 'setValidatorsFilter', 'setValidatorStatus']
+        const nonPayableFunctions = ['safeExecuteSignaturesWithAutoGasLimit', 'onTokenBridged', 'setCouriersFilter', 'setCourierStatus']
         let token!: any
         let stubMediator!: any
         let router!: any
         let bridgeAccount!: HardhatEthersSigner
         let routerWithAccountBridge!: any
-        let runner!: HardhatEthersSigner
+        let courier!: HardhatEthersSigner
 
         const deploy = async () => {
             signers = await hre.ethers.getSigners()
-            ;[owner, , runner, , bridgeAccount] = signers
+            ;[owner, , courier, , bridgeAccount] = signers
             token = await (await hre.ethers.getContractFactory('WETH')).deploy()
             stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
             router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(stubMediator, token, owner)
-            await router.connect(owner).setValidatorStatus(runner, true)
+            await router.connect(owner).setCourierStatus(courier, true)
             await token.deposit({ value: oneEther })
             await token.transfer(router, oneEther)
             // a router whose bridge is a plain account, so the test can call onTokenBridged as the bridge with value
@@ -154,7 +154,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
                 executor: stubMediator.target as string,
                 innerCall: handleNativeCall({ token: token.target as string, recipient: router.target as string, value: oneEther, data: feeDirector(owner.address, 0n) }),
             })
-            await expect(router.safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x', { value: 1n })).to.be.revertedWithoutReason()
+            await expect(router.safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x', { value: 1n })).to.be.revertedWithoutReason()
             expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
         })
 
@@ -166,8 +166,8 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
         })
 
         it('the owner setters revert when sent ether', async () => {
-            await expect(router.connect(owner).setValidatorStatus(runner, true, { value: 1n })).to.be.revertedWithoutReason()
-            await expect(router.connect(owner).setValidatorsFilter(router, { value: 1n })).to.be.revertedWithoutReason()
+            await expect(router.connect(owner).setCourierStatus(courier, true, { value: 1n })).to.be.revertedWithoutReason()
+            await expect(router.connect(owner).setCouriersFilter(router, { value: 1n })).to.be.revertedWithoutReason()
             expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
         })
 
@@ -248,18 +248,18 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             expect(await amb.messageCallStatus(messageId)).to.equal(true)
             expect(await router.processed(messageId)).to.equal(false)
             const signatures = await sign(message, [validators[0], validators[1]])
-            const runner = signers[7] // not a validator: recovery needs no runner, and pays it nothing
+            const courier = signers[7] // not a courier: recovery needs no courier, and pays it nothing
             const recipientBefore = await hre.ethers.provider.getBalance(stranger)
-            const runnerNativeBefore = await hre.ethers.provider.getBalance(runner)
-            const runnerWrappedBefore = await token.balanceOf(runner)
-            await expect(router.connect(user).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures))
+            const courierNativeBefore = await hre.ethers.provider.getBalance(courier)
+            const courierWrappedBefore = await token.balanceOf(courier)
+            await expect(router.connect(user).safeExecuteSignaturesWithAutoGasLimit(courier, message, signatures))
                 .to.emit(router, 'DeliveryRecovered')
                 .withArgs(messageId, token.target, router.target, value)
             expect(await hre.ethers.provider.getBalance(stranger)).to.equal(recipientBefore + value)
             expect(await token.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
-            expect(await hre.ethers.provider.getBalance(runner)).to.equal(runnerNativeBefore)
-            expect(await token.balanceOf(runner)).to.equal(runnerWrappedBefore)
+            expect(await hre.ethers.provider.getBalance(courier)).to.equal(courierNativeBefore)
+            expect(await token.balanceOf(courier)).to.equal(courierWrappedBefore)
         })
 
         it('a second call with the same message returns AlreadyHandled and pays nothing', async () => {
@@ -293,7 +293,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
     describe('fresh message (real mediator): the router delivery is all or nothing', () => {
         const value = oneEther / 10n
         let user!: HardhatEthersSigner
-        let runner!: HardhatEthersSigner
+        let courier!: HardhatEthersSigner
         let stranger!: HardhatEthersSigner
         let token!: any
         let mediator!: any
@@ -301,7 +301,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
 
         const deploy = async () => {
             signers = await hre.ethers.getSigners()
-            ;[owner, user, runner, stranger] = signers
+            ;[owner, user, courier, stranger] = signers
             const PermittableToken = await setup.requirePrecompiled('PermittableToken')
             const tokenImage = await PermittableToken.deploy('TEST', 'TST', 18, 1337)
             const tokenFactory = await (await hre.ethers.getContractFactory('TokenFactory')).deploy(owner, tokenImage)
@@ -312,7 +312,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
             await mediator.initialize(amb, mediator, [oneEther * 100n, oneEther * 10n, 1n], [oneEther * 100n, oneEther * 10n], 1000000, owner, tokenFactory)
             token = await (await hre.ethers.getContractFactory('WETH')).deploy()
             router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(mediator, token, owner)
-            await router.connect(owner).setValidatorStatus(runner, true)
+            await router.connect(owner).setCourierStatus(courier, true)
             await router.connect(user).getFunction('wrapAndRelayTokens()')({ value: oneEther })
         }
         beforeEach(async () => {
@@ -335,7 +335,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
                 const message = messageFor(router.target as string, gas)
                 const dryRun = await router
                     .connect(user)
-                    .safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, '0x', { gasLimit: 8_000_000n })
+                    .safeExecuteSignaturesWithAutoGasLimit.staticCall(courier, message, '0x', { gasLimit: 8_000_000n })
                     .then(
                         () => 'ok',
                         (error: any) => router.interface.parseError(error.data ?? '0x')?.name ?? 'other',
@@ -344,7 +344,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
                 if (dryRun !== 'ok' && dryRun !== 'DeliveryNotCompleted') outcomes.otherRevert++
                 if (dryRun === 'ok') {
                     const strangerBefore = await token.balanceOf(stranger)
-                    await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x', { gasLimit: 8_000_000n })
+                    await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x', { gasLimit: 8_000_000n })
                     const deliveredInFull =
                         (await token.balanceOf(stranger)) - strangerBefore === value && (await token.balanceOf(router)) === 0n
                     if (deliveredInFull) outcomes.delivered++
@@ -361,7 +361,7 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
         it('does not apply the check to a message for another recipient', async () => {
             // An address with no code gets no callback, so the router records nothing for it.
             const message = messageFor(stranger.address, 2_000_000n)
-            await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x')
+            await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(courier, message, '0x')
             expect(await token.balanceOf(stranger)).to.equal(value)
             expect(await router.processed(ethers.keccak256(ethers.toUtf8Bytes('dispatch-fresh-real')))).to.equal(false)
         })

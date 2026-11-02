@@ -29,7 +29,7 @@ bun hardhat --network sepolia deploy-tokenomnibridgerouter \
   --w-native 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9 \
   --bridge 0x546e37DAA15cdb82fd1a717E5dEEa4AF08D4349A
 # delivery-enabled only
-npx hardhat --network sepolia set-validator --add \
+npx hardhat --network sepolia set-courier --add \
   --address 0xDcd4D88552c86114b2ca029F7F8d4e1a7951d051 \
   --router
 ```
@@ -46,7 +46,7 @@ bun hardhat --network mainnet deploy-tokenomnibridgerouter \
   --w-native 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 \
   --bridge 0x1715a3E4A142d8b698131108995174F37aEBA10D
 # delivery-enabled only
-npx hardhat --network mainnet set-validator --add \
+npx hardhat --network mainnet set-courier --add \
   --address 0x5ECfE77502317F3677f23C3b8Ab17929ACE3D74E \
   --router
 ```
@@ -61,7 +61,7 @@ bun hardhat --network bsc deploy-wbnbomnibridgerouter \
   --w-native 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c \
   --bridge 0xb4005881e81a6ecd2c1f75d58e8e41f28d59c6b1
 # delivery-enabled only
-npx hardhat --network mainnet set-validator --add \
+npx hardhat --network mainnet set-courier --add \
   --address 0xc3c3d5d3ba946a2eb3906878ebe187418b0b524e \
   --router
 ```

@@ -140,7 +140,7 @@ describe('TokenOmnibridgeRouter', () => {
             /** Carries the fee director inside a real message addressed to the stub mediator, recipient = the router. */
             const wrapInMessage = async (feeData: string, bridgedToken: ethers.Addressable = token) =>
                 buildMessage({
-                    messageId: ethers.keccak256(ethers.toUtf8Bytes(`runner-fee-${messageCounter++}`)),
+                    messageId: ethers.keccak256(ethers.toUtf8Bytes(`courier-fee-${messageCounter++}`)),
                     sender: await stubMediator.getAddress(),
                     executor: await stubMediator.getAddress(),
                     innerCall: handleNativeCall({
@@ -173,18 +173,18 @@ describe('TokenOmnibridgeRouter', () => {
                     data,
                 ]))
             })
-            it('transfers the appropriate fees to the runner', async () => {
+            it('transfers the appropriate fees to the courier', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'uint256', 'uint256', 'uint256'],
                     [await user.getAddress(), 0b0010, oneEther, oneEther / 10n],
                 )
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
+                    .to.revertedWithCustomError(WETHRouter, 'NotACourier').withArgs(v1.address)
                 // no event emitted
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
-                await WETHRouter.connect(owner).setValidatorStatus(v1, true)
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(false)
+                await WETHRouter.connect(owner).setCourierStatus(v1, true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(true)
                 // data input would not look like this, it would have a receiver and other things
                 // sig list is empty because this is a test - none of the other tests go this far
                 const nextBaseFee = 1_000n
@@ -201,8 +201,8 @@ describe('TokenOmnibridgeRouter', () => {
                 const [wethRouterAfter, userAfter, v1After, v2After] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
                 const gasUsed = receipt!.gasUsed
                 const txFees = gasUsed * nextBaseFee
-                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx runner has his native token reduced to pay for gas')
-                expect(v2Before.weth).to.equal(v2After.weth, 'tx runner does not have any weth modified')
+                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx sender has his native token reduced to pay for gas')
+                expect(v2Before.weth).to.equal(v2After.weth, 'tx sender does not have any weth modified')
                 expect(userBefore.balance).to.be.lessThan(userAfter.balance)
                 const userDelta = userAfter.balance - userBefore.balance
                 expect(userDelta).to.be.lessThan(oneEther)
@@ -212,18 +212,18 @@ describe('TokenOmnibridgeRouter', () => {
                 expect(wethRouterBefore.balance).to.equal(wethRouterAfter.balance)
                 expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth + userDelta + actionFees)
             })
-            it('can transfer wrapped native to the runner', async () => {
+            it('can transfer wrapped native to the courier', async () => {
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'uint256', 'uint256', 'uint256'],
                     [await user.getAddress(), 0b0100, oneEther, oneEther / 10n],
                 )
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
+                    .to.revertedWithCustomError(WETHRouter, 'NotACourier').withArgs(v1.address)
                 // no event emitted
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
-                await WETHRouter.connect(owner).setValidatorStatus(v1, true)
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(false)
+                await WETHRouter.connect(owner).setCourierStatus(v1, true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(true)
                 // data input would not look like this, it would have a receiver and other things
                 // sig list is empty because this is a test - none of the other tests go this far
                 const nextBaseFee = 1_000n
@@ -240,8 +240,8 @@ describe('TokenOmnibridgeRouter', () => {
                 const [wethRouterAfter, userAfter, v1After, v2After] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
                 const gasUsed = receipt!.gasUsed
                 const txFees = gasUsed * nextBaseFee
-                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx runner has his native token reduced to pay for gas')
-                expect(v2Before.weth).to.equal(v2After.weth, 'tx runner does not have any weth modified')
+                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx sender has his native token reduced to pay for gas')
+                expect(v2Before.weth).to.equal(v2After.weth, 'tx sender does not have any weth modified')
                 expect(userBefore.balance).to.be.equal(userAfter.balance)
                 expect(userBefore.weth).to.be.lessThan(userAfter.weth)
                 const userDelta = userAfter.weth - userBefore.weth
@@ -253,7 +253,7 @@ describe('TokenOmnibridgeRouter', () => {
                 expect(wethRouterBefore.balance).to.equal(wethRouterAfter.balance)
                 expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth + userDelta + actionFees)
             })
-            it('can transfer any token to the runner', async () => {
+            it('can transfer any token to the courier', async () => {
                 // even though this data does request an unwrap, the unwrap will not occur
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
                     ['address', 'uint256', 'uint256', 'uint256'],
@@ -262,11 +262,11 @@ describe('TokenOmnibridgeRouter', () => {
                 await stubMediator.setToken(token2)
                 const message = await wrapInMessage(data, token2)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
+                    .to.revertedWithCustomError(WETHRouter, 'NotACourier').withArgs(v1.address)
                 // no event emitted
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
-                await WETHRouter.connect(owner).setValidatorStatus(v1, true)
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(false)
+                await WETHRouter.connect(owner).setCourierStatus(v1, true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(true)
                 // data input would not look like this, it would have a receiver and other things
                 // sig list is empty because this is a test - none of the other tests go this far
                 const nextBaseFee = 1_000n
@@ -284,9 +284,9 @@ describe('TokenOmnibridgeRouter', () => {
                 const [wethRouterAfter, userAfter, v1After, v2After] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
                 const gasUsed = receipt!.gasUsed
                 const txFees = gasUsed * nextBaseFee
-                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx runner has his native token reduced to pay for gas')
-                expect(v2Before.weth).to.equal(v2After.weth, 'tx runner does not have any weth modified')
-                expect(v2Before.token2).to.equal(v2After.token2, 'tx runner does not have any token modified')
+                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx sender has his native token reduced to pay for gas')
+                expect(v2Before.weth).to.equal(v2After.weth, 'tx sender does not have any weth modified')
+                expect(v2Before.token2).to.equal(v2After.token2, 'tx sender does not have any token modified')
                 // destination
                 expect(userBefore.balance).to.be.equal(userAfter.balance, 'user did not have to run any transaction')
                 expect(userBefore.weth).to.be.equal(userAfter.weth, 'users weth was not touched')
@@ -303,7 +303,7 @@ describe('TokenOmnibridgeRouter', () => {
                 expect(wethRouterBefore.weth).to.equal(wethRouterAfter.weth)
                 expect(wethRouterBefore.token2).to.equal(wethRouterAfter.token2 + userDelta + actionFees)
             })
-            it('can transfer a percentage of the amount to the runner', async () => {
+            it('can transfer a percentage of the amount to the courier', async () => {
                 // even though this data does request an unwrap, the unwrap will not occur
                 const feeRatio = 100n
                 const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(
@@ -313,11 +313,11 @@ describe('TokenOmnibridgeRouter', () => {
                 // await stubMediator.setToken(token2)
                 const message = await wrapInMessage(data)
                 await expect(WETHRouter.connect(v2).safeExecuteSignaturesWithAutoGasLimit(v1, message, '0x'))
-                    .to.revertedWithCustomError(WETHRouter, 'RunnerNotValidator').withArgs(v1.address)
+                    .to.revertedWithCustomError(WETHRouter, 'NotACourier').withArgs(v1.address)
                 // no event emitted
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(false)
-                await WETHRouter.connect(owner).setValidatorStatus(v1, true)
-                await expect(WETHRouter.isValidator(v1)).eventually.to.equal(true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(false)
+                await WETHRouter.connect(owner).setCourierStatus(v1, true)
+                await expect(WETHRouter.isCourier(v1)).eventually.to.equal(true)
                 // data input would not look like this, it would have a receiver and other things
                 // sig list is empty because this is a test - none of the other tests go this far
                 const nextBaseFee = 1_000n
@@ -334,9 +334,9 @@ describe('TokenOmnibridgeRouter', () => {
                 const [wethRouterAfter, userAfter, v1After, v2After] = await Promise.all([WETHRouter, user, v1, v2].map(snap))
                 const gasUsed = receipt!.gasUsed
                 const txFees = gasUsed * nextBaseFee
-                // transaction runner
-                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx runner has his native token reduced to pay for gas')
-                expect(v2Before.weth).to.equal(v2After.weth, 'tx runner does not have any weth modified')
+                // transaction sender
+                expect(v2Before.balance).to.equal(v2After.balance + txFees, 'tx sender has his native token reduced to pay for gas')
+                expect(v2Before.weth).to.equal(v2After.weth, 'tx sender does not have any weth modified')
                 // destination
                 expect(userBefore.balance).to.be.equal(userAfter.balance, 'user did not have to run any transaction')
                 const fees = oneEther / feeRatio

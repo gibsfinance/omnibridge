@@ -426,7 +426,7 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
         let nonce = 0n
         const value = ethers.parseEther('0.01')
         const tip = value / 10n
-        const runner = ethers.getAddress('0x' + 'cd'.repeat(20))
+        const courier = ethers.getAddress('0x' + 'cd'.repeat(20))
 
         before(async function () {
             const failure = await forkEthereum(BLOCK)
@@ -467,7 +467,7 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             expect(await realBridge.implementation()).to.equal(implementationBefore)
 
             router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(MEDIATOR, WETH, owner)
-            await router.setValidatorStatus(runner, true)
+            await router.setCourierStatus(courier, true)
         })
 
         /** A fresh, signed message in the real layout: WETH out of custody to the router, a fixed tip, unwrap to ether. */
@@ -487,20 +487,20 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             return router.interface.parseError(data)?.name ?? `other ${String(data).slice(0, 10)}`
         }
 
-        it('ample gas: the real bridge delivers through the entry, the recipient and the runner are paid', async function () {
+        it('ample gas: the real bridge delivers through the entry, the recipient and the courier are paid', async function () {
             if (!forked) return this.skip()
             const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
             const snapshot = await takeSnapshot()
             const recipient = ethers.Wallet.createRandom().address
             const { messageId, message, signatures } = await freshSignedMessage(recipient)
             expect(await realBridge.relayedMessages(messageId)).to.equal(false)
-            expect(await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, signatures, { gasLimit: 2_000_000n })).to.equal(0n)
-            await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures, { gasLimit: 2_000_000n })).wait()
+            expect(await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit.staticCall(courier, message, signatures, { gasLimit: 2_000_000n })).to.equal(0n)
+            await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(courier, message, signatures, { gasLimit: 2_000_000n })).wait()
             expect(await realBridge.relayedMessages(messageId)).to.equal(true)
             expect(await realBridge.messageCallStatus(messageId)).to.equal(true)
             expect(await router.processed(messageId)).to.equal(true)
             expect(await hre.ethers.provider.getBalance(recipient)).to.equal(value - tip)
-            expect(await hre.ethers.provider.getBalance(runner)).to.equal(tip)
+            expect(await hre.ethers.provider.getBalance(courier)).to.equal(tip)
             expect(await weth.balanceOf(router)).to.equal(0n)
             await snapshot.restore()
         })
@@ -518,11 +518,11 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
                     const { message, signatures } = await freshSignedMessage(recipient)
                     const dryRun = await router
                         .connect(caller)
-                        .safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, signatures, { gasLimit })
+                        .safeExecuteSignaturesWithAutoGasLimit.staticCall(courier, message, signatures, { gasLimit })
                         .then(() => 'ok', errorName)
                     if (dryRun !== 'ok') throughEntry.reverts[dryRun] = (throughEntry.reverts[dryRun] ?? 0) + 1
                     if (dryRun === 'ok') {
-                        await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures, { gasLimit })).wait()
+                        await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(courier, message, signatures, { gasLimit })).wait()
                         const paid = (await hre.ethers.provider.getBalance(recipient)) === value - tip
                         const routerEmpty = (await weth.balanceOf(router)) === 0n
                         if (paid && routerEmpty) throughEntry.delivered++
@@ -561,7 +561,7 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
 
         // Anyone can strand a delivery on purpose: the real bridge's safeExecuteSignaturesWithGasLimit runs the
         // message with the gas the caller names, enough for the mediator but not for the router callback, and
-        // the mediator swallows the failed callback. The entry must then finish it, paying the runner its tip.
+        // the mediator swallows the failed callback. The entry must then finish it, paying the courier its tip.
         it('a strand made on purpose with safeExecuteSignaturesWithGasLimit on the real bridge is recovered through the entry', async function () {
             if (!forked) return this.skip()
             const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
@@ -589,12 +589,12 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             expect(await router.processed(messageId)).to.equal(false)
             expect(await hre.ethers.provider.getBalance(recipient), 'the recipient is unpaid').to.equal(0n)
 
-            const runnerBefore = await hre.ethers.provider.getBalance(runner)
-            expect(await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, signatures, { gasLimit: 2_000_000n })).to.equal(1n)
-            await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures, { gasLimit: 2_000_000n })).wait()
+            const courierBefore = await hre.ethers.provider.getBalance(courier)
+            expect(await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit.staticCall(courier, message, signatures, { gasLimit: 2_000_000n })).to.equal(1n)
+            await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(courier, message, signatures, { gasLimit: 2_000_000n })).wait()
             expect(await router.processed(messageId)).to.equal(true)
             expect(await hre.ethers.provider.getBalance(recipient), 'the recipient is paid the value minus the tip').to.equal(value - tip)
-            expect((await hre.ethers.provider.getBalance(runner)) - runnerBefore, 'the runner earns the tip').to.equal(tip)
+            expect((await hre.ethers.provider.getBalance(courier)) - courierBefore, 'the courier earns the tip').to.equal(tip)
             expect(await weth.balanceOf(router)).to.equal(0n)
             await snapshot.restore()
         })
@@ -626,7 +626,7 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             await snapshot.restore()
 
             const throughEntry = await malformedMessage()
-            await expect(router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, throughEntry.message, throughEntry.signatures, { gasLimit: 2_000_000n }))
+            await expect(router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(courier, throughEntry.message, throughEntry.signatures, { gasLimit: 2_000_000n }))
                 .to.be.revertedWithCustomError(router, 'DeliveryNotCompleted')
                 .withArgs(throughEntry.messageId)
             expect(await realBridge.relayedMessages(throughEntry.messageId), 'the message stays unrelayed, so it can be retried').to.equal(false)

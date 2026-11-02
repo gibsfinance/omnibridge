@@ -25,8 +25,8 @@ contract MockReentrantRecoverer {
     bytes public reentrantCallRevertData;
     /// @notice True when the hook calls the single delivery entry instead of recover().
     bool public reentersEntry;
-    /// @notice The runner the re-entrant entry call names.
-    address public entryRunner;
+    /// @notice The courier the re-entrant entry call names.
+    address public entryCourier;
 
     /// @dev Sets the router and the message to replay, and arms the hook for one recover() call.
     function arm(address routerAddress, bytes calldata message, bytes calldata signatures) external {
@@ -39,17 +39,17 @@ contract MockReentrantRecoverer {
 
     /**
      * @dev Arms the hook for one call to the router's single delivery entry,
-     * safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures).
+     * safeExecuteSignaturesWithAutoGasLimit(courier, message, signatures).
      * @param routerAddress the router to call back
-     * @param runner the runner the re-entrant call names
+     * @param courier the courier the re-entrant call names
      * @param message the message the re-entrant call sends
      * @param signatures the signatures for that message
      */
-    function armEntry(address routerAddress, address runner, bytes calldata message, bytes calldata signatures) external {
+    function armEntry(address routerAddress, address courier, bytes calldata message, bytes calldata signatures) external {
         router = routerAddress;
         replayMessage = message;
         replaySignatures = signatures;
-        entryRunner = runner;
+        entryCourier = courier;
         reentersEntry = true;
         armed = true;
     }
@@ -63,7 +63,7 @@ contract MockReentrantRecoverer {
         reentrantCallMade = true;
         bytes memory reentrantCall = reentersEntry
             ? abi.encodeWithSignature(
-                "safeExecuteSignaturesWithAutoGasLimit(address,bytes,bytes)", entryRunner, replayMessage, replaySignatures
+                "safeExecuteSignaturesWithAutoGasLimit(address,bytes,bytes)", entryCourier, replayMessage, replaySignatures
             )
             : abi.encodeWithSignature("recover(bytes,bytes)", replayMessage, replaySignatures);
         (bool success, bytes memory returned) = router.call(reentrantCall);

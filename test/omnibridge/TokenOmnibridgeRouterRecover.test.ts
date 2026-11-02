@@ -388,7 +388,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(recipientBefore).to.equal(await hre.ethers.provider.getBalance(stranger)) // sanity: recipient unpaid so far
 
             // 2) re-run the SAME message through the SINGLE ENTRY with ample gas. relayedMessages is
-            //    true, so the entry routes to recovery (no tip). runner is ignored on this branch.
+            //    true, so the entry routes to recovery (no tip). courier is ignored on this branch.
             await router.connect(user).safeExecuteSignaturesWithAutoGasLimit(user.address, message, signatures)
 
             // 3) delivered correctly: the recipient got the full value as native coin, the router is
@@ -417,12 +417,12 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(messageId)).to.equal(true)
         })
 
-        it('a validator runner that recovers a strand through the single entry earns the tip', async () => {
+        it('a listed courier that recovers a strand through the single entry earns the tip', async () => {
             // this is what gives a relayer a reason to finish a stranded delivery,
             // so a griefer who strands a transfer cannot deny the service.
-            const runner = signers[4]
+            const courier = signers[4]
             const caller = signers[5]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+            await router.connect(owner).setCourierStatus(courier.address, true)
 
             const messageId = nextMessageId()
             const fee = value / 10n
@@ -436,18 +436,18 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(messageId)).to.equal(false)
 
             const recipientBefore = await token.balanceOf(user)
-            const runnerBefore = await token.balanceOf(runner.address)
-            // the validator runner is attributed; the caller can be anyone
-            await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures)
+            const courierBefore = await token.balanceOf(courier.address)
+            // the listed courier is attributed; the caller can be anyone
+            await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, signatures)
 
             expect((await token.balanceOf(user)) - recipientBefore).to.equal(value - fee) // recipient gets value minus the tip
-            expect((await token.balanceOf(runner.address)) - runnerBefore).to.equal(fee) // runner earns the tip
+            expect((await token.balanceOf(courier.address)) - courierBefore).to.equal(fee) // courier earns the tip
             expect(await token.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
         })
 
-        it('a non-validator recovering through the single entry earns no tip (recipient paid in full)', async () => {
-            const runner = signers[6] // not a validator
+        it('a non-courier recovering through the single entry earns no tip (recipient paid in full)', async () => {
+            const courier = signers[6] // not a courier
             const messageId = nextMessageId()
             const innerCall = handleCall({ data: feeDirector(user.address, 0b0001n, value / 10n) })
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
@@ -455,11 +455,11 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
 
             await strand(messageId, innerCall)
             const recipientBefore = await token.balanceOf(user)
-            const runnerBefore = await token.balanceOf(runner.address)
-            await router.connect(runner).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures)
+            const courierBefore = await token.balanceOf(courier.address)
+            await router.connect(courier).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, signatures)
 
             expect((await token.balanceOf(user)) - recipientBefore).to.equal(value) // full value, no tip taken
-            expect(await token.balanceOf(runner.address)).to.equal(runnerBefore) // non-validator earns nothing
+            expect(await token.balanceOf(courier.address)).to.equal(courierBefore) // non-courier earns nothing
             expect(await router.processed(messageId)).to.equal(true)
         })
     })
@@ -560,42 +560,42 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await token.balanceOf(router)).to.equal(0n)
         })
 
-        it('the entry recovery branch pays a bridged strand in the bridged token, and a validator runner earns the tip', async () => {
-            const runner = signers[4]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+        it('the entry recovery branch pays a bridged strand in the bridged token, and a listed courier earns the tip', async () => {
+            const courier = signers[4]
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const tip = value / 10n
             const messageId = nextMessageId()
             const innerCall = bridgedCall(feeDirector(user.address, 0b0001n, tip))
             await strand(messageId, innerCall, { asset: bridged })
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
             const signatures = await sign(message, [validators[0], validators[1]])
-            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner.address, message, signatures)).to.equal(
+            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(courier.address, message, signatures)).to.equal(
                 Outcome.Recovered,
             )
-            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures))
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, signatures))
                 .to.emit(router, 'DeliveryRecovered')
                 .withArgs(messageId, bridged.target, router.target, value)
             expect(await bridged.balanceOf(user)).to.equal(value - tip)
-            expect(await bridged.balanceOf(runner)).to.equal(tip)
+            expect(await bridged.balanceOf(courier)).to.equal(tip)
             expect(await bridged.balanceOf(router)).to.equal(0n)
-            expect(await token.balanceOf(runner), 'no wrapped token moved').to.equal(0n)
+            expect(await token.balanceOf(courier), 'no wrapped token moved').to.equal(0n)
         })
 
         it('a fresh bridged delivery through the entry mints the bridged token to the router and pays it on', async () => {
-            const runner = signers[4]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const courier = signers[4]
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const tip = value / 10n
             const messageId = nextMessageId()
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall: bridgedCall(feeDirector(user.address, 0b0001n, tip)) })
             const wrappedInRouter = await token.balanceOf(router)
-            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner.address, message, '0x')).to.equal(
+            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(courier.address, message, '0x')).to.equal(
                 Outcome.Delivered,
             )
-            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, '0x')
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, '0x')
             expect(await amb.relayedMessages(messageId)).to.equal(true)
             expect(await router.processed(messageId)).to.equal(true)
             expect(await bridged.balanceOf(user)).to.equal(value - tip)
-            expect(await bridged.balanceOf(runner)).to.equal(tip)
+            expect(await bridged.balanceOf(courier)).to.equal(tip)
             expect(await bridged.balanceOf(router)).to.equal(0n)
             expect(await token.balanceOf(router), 'the wrapped token in the router is untouched').to.equal(wrappedInRouter)
         })
@@ -607,13 +607,13 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const twinRecipient = () => ethers.Wallet.createRandom().address
 
             it('fresh, through the entry', async () => {
-                const runner = signers[4]
-                await router.connect(owner).setValidatorStatus(runner.address, true)
+                const courier = signers[4]
+                await router.connect(owner).setCourierStatus(courier.address, true)
                 await strandHonestWrappedDelivery()
                 const recipient = twinRecipient()
                 const messageId = nextMessageId()
                 const message = buildMessage({ messageId, executor: mediator.target as string, innerCall: bridgedCall(feeDirector(recipient, unwrapFlag)) })
-                await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, '0x')
+                await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, '0x')
                 expect(await router.processed(messageId)).to.equal(true)
                 expect(await bridged.balanceOf(recipient), 'paid in the twin').to.equal(value)
                 expect(await hre.ethers.provider.getBalance(recipient), 'no ether').to.equal(0n)
@@ -754,14 +754,14 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         })
     })
 
-    // The single delivery entry holds the runner slot, not the reentrancy guard that recover() holds.
+    // The single delivery entry holds the courier slot, not the reentrancy guard that recover() holds.
     // A payout recipient that re-enters recover() for ANOTHER strand would then run that recovery
-    // with the outer runner still attributed, and pay the outer runner a tip it did not earn.
+    // with the outer courier still attributed, and pay the outer courier a tip it did not earn.
     describe('re-entry during a recovery through the single delivery entry', () => {
-        it('a recipient cannot re-enter recover() and tip the outer runner from another strand', async () => {
-            const runner = signers[4]
+        it('a recipient cannot re-enter recover() and tip the outer courier from another strand', async () => {
+            const courier = signers[4]
             const secondRecipient = signers[8]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const hookToken = await (await hre.ethers.getContractFactory('MockTransferHookToken')).deploy()
             const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
             const tip = value / 10n
@@ -783,7 +783,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const inner = await strandHookToken(secondRecipient.address)
             await recoverer.arm(router, inner.message, inner.signatures)
 
-            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, outer.message, outer.signatures)
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, outer.message, outer.signatures)
 
             // the outer message paid as it should
             expect(await hookToken.balanceOf(recoverer)).to.equal(value - tip)
@@ -792,26 +792,26 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await recoverer.reentrantCallMade()).to.equal(true)
             expect(await recoverer.reentrantCallSucceeded()).to.equal(false)
             expect(await recoverer.reentrantCallRevertData()).to.equal(router.interface.getError('ReentrancyGuard')!.selector)
-            // so the runner earned exactly one tip, and the other strand is untouched
-            expect(await hookToken.balanceOf(runner)).to.equal(tip)
+            // so the courier earned exactly one tip, and the other strand is untouched
+            expect(await hookToken.balanceOf(courier)).to.equal(tip)
             expect(await hookToken.balanceOf(secondRecipient)).to.equal(0n)
             expect(await router.processed(inner.messageId)).to.equal(false)
             expect(await hookToken.balanceOf(router)).to.equal(value)
 
-            // the other strand still recovers on its own, with no tip because no runner is attributed
+            // the other strand still recovers on its own, with no tip because no courier is attributed
             await router.recover(inner.message, inner.signatures)
             expect(await hookToken.balanceOf(secondRecipient)).to.equal(value)
-            expect(await hookToken.balanceOf(runner)).to.equal(tip)
+            expect(await hookToken.balanceOf(courier)).to.equal(tip)
         })
 
-        // A recovery that names a runner who is not a validator must still hold the entry's own guard (the
-        // runner slot) for the whole call. If the slot went idle, a payout recipient could start a second,
+        // A recovery that names an address that is not a courier must still hold the entry's own guard (the
+        // courier slot) for the whole call. If the slot went idle, a payout recipient could start a second,
         // independent entry run in the middle of the first one.
-        it('a non-validator recovery keeps the entry guard: a recipient re-entering the entry is refused, and no tip is paid', async () => {
-            const nonValidatorRunner = signers[6]
-            const validatorRunner = signers[4]
-            await router.connect(owner).setValidatorStatus(validatorRunner.address, true)
-            expect(await router.isValidator(nonValidatorRunner.address)).to.equal(false)
+        it('a non-courier recovery keeps the entry guard: a recipient re-entering the entry is refused, and no tip is paid', async () => {
+            const unlistedCourier = signers[6]
+            const listedCourier = signers[4]
+            await router.connect(owner).setCourierStatus(listedCourier.address, true)
+            expect(await router.isCourier(unlistedCourier.address)).to.equal(false)
             const hookToken = await (await hre.ethers.getContractFactory('MockTransferHookToken')).deploy()
             const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
             const tip = value / 10n
@@ -826,15 +826,15 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             await amb.executeMessageCall(token, router, token.interface.encodeFunctionData('deposit'), outerId, 100_000n)
             const outerMessage = buildMessage({ messageId: outerId, executor: mediator.target as string, innerCall: outerCall })
 
-            // the re-entrant call: a fresh, harmless message through the entry, naming a real validator, so
+            // the re-entrant call: a fresh, harmless message through the entry, naming a listed courier, so
             // nothing but the entry guard can refuse it
             const innerId = nextMessageId()
             const innerMessage = buildMessage({ messageId: innerId, executor: token.target as string, innerCall: token.interface.encodeFunctionData('deposit') })
-            await recoverer.armEntry(router, validatorRunner.address, innerMessage, '0x')
+            await recoverer.armEntry(router, listedCourier.address, innerMessage, '0x')
 
             await router
                 .connect(stranger)
-                .safeExecuteSignaturesWithAutoGasLimit(nonValidatorRunner.address, outerMessage, await sign(outerMessage, [validators[0], validators[1]]))
+                .safeExecuteSignaturesWithAutoGasLimit(unlistedCourier.address, outerMessage, await sign(outerMessage, [validators[0], validators[1]]))
 
             expect(await router.processed(outerId)).to.equal(true)
             expect(await recoverer.reentrantCallMade()).to.equal(true)
@@ -842,9 +842,9 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await recoverer.reentrantCallRevertData()).to.equal(router.interface.getError('ReentrancyGuard')!.selector)
             expect(await amb.relayedMessages(innerId), 'the inner message never ran').to.equal(false)
             expect(await hookToken.balanceOf(recoverer), 'the recipient is paid in full').to.equal(value)
-            expect(await hookToken.balanceOf(nonValidatorRunner), 'no tip to the non-validator').to.equal(0n)
-            expect(await hookToken.balanceOf(validatorRunner), 'no tip to anyone').to.equal(0n)
-            expect(await hre.ethers.provider.getStorage(router, await router.RUNNER_SLOT()), 'the guard is released afterwards').to.equal(ethers.toBeHex(1n, 32))
+            expect(await hookToken.balanceOf(unlistedCourier), 'no tip to the non-courier').to.equal(0n)
+            expect(await hookToken.balanceOf(listedCourier), 'no tip to anyone').to.equal(0n)
+            expect(await hre.ethers.provider.getStorage(router, await router.COURIER_SLOT()), 'the guard is released afterwards').to.equal(ethers.toBeHex(1n, 32))
         })
     })
 
@@ -853,10 +853,10 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
     // of an arbitrary message, or a hostile token) can call the public recover() for someone else's
     // strand. The tip belongs to the message the entry is handling, never to that other payout.
     describe('recover() called from inside a fresh delivery through the single entry', () => {
-        it('pays the victim in full and gives the runner nothing from the victim payout', async () => {
-            const runner = signers[4]
+        it('pays the victim in full and gives the courier nothing from the victim payout', async () => {
+            const courier = signers[4]
             const victim = signers[8]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const recoverer = await (await hre.ethers.getContractFactory('MockReentrantRecoverer')).deploy()
             const tip = value / 10n
 
@@ -873,15 +873,15 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const attackMessage = buildMessage({ messageId: attackId, executor: await recoverer.getAddress(), innerCall: attackCall })
 
             const victimBefore = await token.balanceOf(victim)
-            const runnerBefore = await token.balanceOf(runner)
-            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, attackMessage, '0x')
+            const courierBefore = await token.balanceOf(courier)
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, attackMessage, '0x')
 
             // the inner recover() really ran inside the entry's fresh delivery
             expect(await recoverer.reentrantCallMade()).to.equal(true)
             expect(await recoverer.reentrantCallSucceeded()).to.equal(true)
             expect(await router.processed(victimId)).to.equal(true)
             expect((await token.balanceOf(victim)) - victimBefore, 'the victim is paid in full').to.equal(value)
-            expect((await token.balanceOf(runner)) - runnerBefore, 'the runner earns nothing from that payout').to.equal(0n)
+            expect((await token.balanceOf(courier)) - courierBefore, 'the courier earns nothing from that payout').to.equal(0n)
             expect(await token.balanceOf(router)).to.equal(0n)
         })
     })
@@ -922,8 +922,8 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         it('the entry: a loser gets AlreadyHandled, writes nothing, pays nothing, and spends little gas', async () => {
             const { message, signatures } = await recoveredStrand('entry')
             const loser = signers[9]
-            const runnerSlot = await router.RUNNER_SLOT()
-            const slotBefore = await hre.ethers.provider.getStorage(router, runnerSlot)
+            const courierSlot = await router.COURIER_SLOT()
+            const slotBefore = await hre.ethers.provider.getStorage(router, courierSlot)
             const recipientBefore = await hre.ethers.provider.getBalance(stranger)
             expect(await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit.staticCall(loser.address, message, signatures)).to.equal(
                 Outcome.AlreadyHandled,
@@ -935,7 +935,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(receipt.logs.length, 'no event of any kind').to.equal(0)
             expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_GAS_CEILING)
             expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_EXECUTION_GAS_CEILING)
-            expect(await hre.ethers.provider.getStorage(router, runnerSlot)).to.equal(slotBefore)
+            expect(await hre.ethers.provider.getStorage(router, courierSlot)).to.equal(slotBefore)
             expect(await hre.ethers.provider.getBalance(stranger), 'no second payment').to.equal(recipientBefore)
         })
 
@@ -957,29 +957,29 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         /**
          * Sends `message` through the entry as a losing relayer would, with genuine signatures, after
          * the bridge already relayed it. Returns the outcome, the receipt, the signatures, and whether
-         * the runner slot stayed untouched.
+         * the courier slot stayed untouched.
          */
         const loserCall = async (message: string) => {
             const loser = signers[9]
             const signatures = await sign(message, [validators[0], validators[1]])
-            const runnerSlot = await router.RUNNER_SLOT()
-            const runnerSlotBefore = await hre.ethers.provider.getStorage(router, runnerSlot)
+            const courierSlot = await router.COURIER_SLOT()
+            const courierSlotBefore = await hre.ethers.provider.getStorage(router, courierSlot)
             const outcome = await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit.staticCall(loser.address, message, signatures)
             const receipt = await (await router.connect(loser).safeExecuteSignaturesWithAutoGasLimit(loser.address, message, signatures)).wait()
             const execution = await executionGas(receipt.hash)
             console.log(`      losing entry call on another recipient's message used ${receipt.gasUsed} gas (execution ${execution})`)
-            return { outcome, receipt, execution, signatures, runnerSlotUnchanged: (await hre.ethers.provider.getStorage(router, runnerSlot)) === runnerSlotBefore }
+            return { outcome, receipt, execution, signatures, courierSlotUnchanged: (await hre.ethers.provider.getStorage(router, courierSlot)) === courierSlotBefore }
         }
 
         // `processed` is written only for messages to this router, so the check above cannot see a race
         // lost on a message for someone else. Nothing can ever be paid for such a message, so the entry
-        // must return as soon as it knows the bridge relayed it: no runner slot write, no signature check.
+        // must return as soon as it knows the bridge relayed it: no courier slot write, no signature check.
         describe('on a message the bridge already relayed to someone else', () => {
             /**
              * The most gas, transaction base cost and calldata included, this loser may use. It makes one
              * bridge read where the loser above makes a storage read, so it pays more. Measured at 42,208
              * (this mediator) and 38,230 (another executor). The processed-first order spent 45,349 and
-             * 41,584; before the early exit, the same call wrote the runner and entry slots and ran the full
+             * 41,584; before the early exit, the same call wrote the courier and entry slots and ran the full
              * recovery checks, signatures included, before it reverted: far above this bound.
              */
             const LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING = 45_000n
@@ -997,13 +997,13 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 await amb.executeMessageCall(token, router, innerCall, messageId, 100_000n)
                 expect(await amb.relayedMessages(messageId)).to.equal(true)
                 const message = buildMessage({ messageId, executor: token.target as string, innerCall })
-                const { outcome, receipt, execution, signatures, runnerSlotUnchanged } = await loserCall(message)
+                const { outcome, receipt, execution, signatures, courierSlotUnchanged } = await loserCall(message)
                 expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
                 expect(receipt.status).to.equal(1)
                 expect(receipt.logs.length, 'no event of any kind').to.equal(0)
                 expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING)
                 expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING)
-                expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
+                expect(courierSlotUnchanged, 'the courier slot was never written').to.equal(true)
                 expect(await router.processed(messageId)).to.equal(false)
                 // the caller of recover() asked for something unrecoverable: that stays an error
                 await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'WrongExecutor')
@@ -1016,13 +1016,13 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 expect(await amb.messageCallStatus(messageId)).to.equal(true)
                 const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
                 const strangerTokensBefore = await token.balanceOf(stranger)
-                const { outcome, receipt, execution, signatures, runnerSlotUnchanged } = await loserCall(message)
+                const { outcome, receipt, execution, signatures, courierSlotUnchanged } = await loserCall(message)
                 expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
                 expect(receipt.status).to.equal(1)
                 expect(receipt.logs.length, 'no event of any kind').to.equal(0)
                 expect(receipt.gasUsed, 'a loser spends little gas').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_GAS_CEILING)
                 expect(execution, 'a loser executes little').to.be.lessThan(LOSING_CALL_ON_ANOTHER_RECIPIENT_EXECUTION_GAS_CEILING)
-                expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
+                expect(courierSlotUnchanged, 'the courier slot was never written').to.equal(true)
                 expect(await token.balanceOf(stranger), 'nothing paid').to.equal(strangerTokensBefore)
                 await expect(router.recover(message, signatures)).to.be.revertedWithCustomError(router, 'NotForThisRouter')
             })
@@ -1051,18 +1051,18 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
 
             it('the entry returns AlreadyRelayedForAnotherRecipient for this mediator and another recipient, never AlreadyHandled', async () => {
                 const message = anotherRecipientMessage(await paidIdentifier())
-                const { outcome, receipt, runnerSlotUnchanged } = await loserCall(message)
+                const { outcome, receipt, courierSlotUnchanged } = await loserCall(message)
                 expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
                 expect(receipt.logs.length, 'no event of any kind').to.equal(0)
-                expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
+                expect(courierSlotUnchanged, 'the courier slot was never written').to.equal(true)
             })
 
             it('the entry returns AlreadyRelayedForAnotherRecipient for another executor, never AlreadyHandled', async () => {
                 const message = anotherExecutorMessage(await paidIdentifier())
-                const { outcome, receipt, runnerSlotUnchanged } = await loserCall(message)
+                const { outcome, receipt, courierSlotUnchanged } = await loserCall(message)
                 expect(outcome).to.equal(Outcome.AlreadyRelayedForAnotherRecipient)
                 expect(receipt.logs.length, 'no event of any kind').to.equal(0)
-                expect(runnerSlotUnchanged, 'the runner slot was never written').to.equal(true)
+                expect(courierSlotUnchanged, 'the courier slot was never written').to.equal(true)
             })
 
             it('recover() reverts NotForThisRouter for another recipient, not AlreadyHandled', async () => {
@@ -1165,9 +1165,9 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await router.processed(messageId)).to.equal(true)
         })
 
-        it('recovers a deploy strand through the entry recovery branch; a validator runner earns the tip', async () => {
-            const runner = signers[4]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+        it('recovers a deploy strand through the entry recovery branch; a listed courier earns the tip', async () => {
+            const courier = signers[4]
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const tip = value / 10n
             const messageId = nextMessageId()
             const innerCall = deployCall(feeDirector(user.address, 0b0001n, tip))
@@ -1177,14 +1177,14 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             expect(await bridged.balanceOf(router), 'the delivery stranded in the router').to.equal(value)
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
             const signatures = await sign(message, [validators[0], validators[1]])
-            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner.address, message, signatures)).to.equal(
+            expect(await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit.staticCall(courier.address, message, signatures)).to.equal(
                 Outcome.Recovered,
             )
-            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures))
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, signatures))
                 .to.emit(router, 'DeliveryRecovered')
                 .withArgs(messageId, bridgedAddress, router.target, value)
             expect(await bridged.balanceOf(user)).to.equal(value - tip)
-            expect(await bridged.balanceOf(runner)).to.equal(tip)
+            expect(await bridged.balanceOf(courier)).to.equal(tip)
             expect(await bridged.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
         })
@@ -1214,12 +1214,12 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         const overflowingTip = (recipient: string) => feeDirector(recipient, 0n, value, ethers.MaxUint256)
 
         it('fresh through the entry reverts DeliveryNotCompleted; the direct bridge relay then pays in full with no tip', async () => {
-            const runner = signers[4]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const courier = signers[4]
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const messageId = nextMessageId()
             const innerCall = handleCall({ data: overflowingTip(user.address) })
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
-            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, '0x'))
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, '0x'))
                 .to.be.revertedWithCustomError(router, 'DeliveryNotCompleted')
                 .withArgs(messageId)
             expect(await amb.relayedMessages(messageId), 'the message stays unrelayed').to.equal(false)
@@ -1227,21 +1227,21 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const userBefore = await token.balanceOf(user)
             await deliver(messageId, innerCall, 3_000_000n)
             expect((await token.balanceOf(user)) - userBefore, 'paid in full').to.equal(value)
-            expect(await token.balanceOf(runner), 'no tip').to.equal(0n)
+            expect(await token.balanceOf(courier), 'no tip').to.equal(0n)
             expect(await token.balanceOf(router)).to.equal(0n)
             expect(await router.processed(messageId)).to.equal(true)
         })
 
-        it('a strand: recovery through the entry with a validator runner reverts on the tip; recover() pays in full with no tip', async () => {
-            const runner = signers[4]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+        it('a strand: recovery through the entry with a listed courier reverts on the tip; recover() pays in full with no tip', async () => {
+            const courier = signers[4]
+            await router.connect(owner).setCourierStatus(courier.address, true)
             const messageId = nextMessageId()
             const innerCall = handleCall({ data: overflowingTip(user.address) })
             await strand(messageId, innerCall)
             const message = buildMessage({ messageId, executor: mediator.target as string, innerCall })
             const signatures = await sign(message, [validators[0], validators[1]])
 
-            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, message, signatures)).to.be.revertedWithPanic(0x11)
+            await expect(router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, message, signatures)).to.be.revertedWithPanic(0x11)
             expect(await router.processed(messageId)).to.equal(false)
             expect(await token.balanceOf(router), 'still stranded').to.equal(value)
 
@@ -1250,7 +1250,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
                 .to.emit(router, 'DeliveryRecovered')
                 .withArgs(messageId, token.target, router.target, value)
             expect((await token.balanceOf(user)) - userBefore, 'paid in full').to.equal(value)
-            expect(await token.balanceOf(runner), 'no tip').to.equal(0n)
+            expect(await token.balanceOf(courier), 'no tip').to.equal(0n)
             expect(await token.balanceOf(router)).to.equal(0n)
         })
     })
@@ -1264,13 +1264,13 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
         const IDLE_ENTRY_MESSAGE = ethers.toBeHex(1n, 32)
 
         it('the entry returns its message slot to idle after a fresh delivery and after a recovery', async () => {
-            const runner = signers[4]
-            await router.connect(owner).setValidatorStatus(runner.address, true)
+            const courier = signers[4]
+            await router.connect(owner).setCourierStatus(courier.address, true)
             expect(await hre.ethers.provider.getStorage(router, ENTRY_MESSAGE_SLOT), 'idle from the constructor').to.equal(IDLE_ENTRY_MESSAGE)
 
             const freshId = nextMessageId()
             const freshMessage = buildMessage({ messageId: freshId, executor: mediator.target as string, innerCall: handleCall({ data: feeDirector(user.address, 0n) }) })
-            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, freshMessage, '0x')
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, freshMessage, '0x')
             expect(await router.processed(freshId)).to.equal(true)
             expect(await hre.ethers.provider.getStorage(router, ENTRY_MESSAGE_SLOT), 'idle after a fresh delivery').to.equal(IDLE_ENTRY_MESSAGE)
 
@@ -1278,7 +1278,7 @@ describe('TokenOmnibridgeRouter recovery and wrapped fallback', () => {
             const strandCall = handleCall({ data: feeDirector(user.address, 0n) })
             await strand(strandId, strandCall)
             const strandMessage = buildMessage({ messageId: strandId, executor: mediator.target as string, innerCall: strandCall })
-            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(runner.address, strandMessage, await sign(strandMessage, [validators[0], validators[1]]))
+            await router.connect(stranger).safeExecuteSignaturesWithAutoGasLimit(courier.address, strandMessage, await sign(strandMessage, [validators[0], validators[1]]))
             expect(await router.processed(strandId)).to.equal(true)
             expect(await hre.ethers.provider.getStorage(router, ENTRY_MESSAGE_SLOT), 'idle after a recovery').to.equal(IDLE_ENTRY_MESSAGE)
         })
