@@ -139,7 +139,6 @@ Both the entry and `recover` return a `DeliveryOutcome`:
 Losing a race is not an error. The call returns at once and writes nothing.
 In the unit test fixture a losing call costs about 37,000 gas for `AlreadyHandled`,
 and 38,000 to 42,500 gas for `AlreadyRelayedForAnotherRecipient`, transaction cost included.
-Before the router returned an outcome, a lost race reverted. It cost 112,649 gas on the entry and 76,682 gas on `recover`.
 
 ### The order of the checks
 
