@@ -254,7 +254,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * @param _data extra data passed alongside with relayTokensAndCall
      * on the other side of the bridge. Should contain coins receiver address.
      */
-    function onTokenBridged(address _token, uint256 _value, bytes memory _data) external payable virtual nonReentrant {
+    function onTokenBridged(address _token, uint256 _value, bytes memory _data) external virtual nonReentrant {
         require(msg.sender == address(bridge));
         // Record the message that is executing now, so a later {recover} can
         // never pay this message a second time. The read is tolerant: a bridge
@@ -876,7 +876,6 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      */
     function safeExecuteSignaturesWithAutoGasLimit(address runner, bytes calldata _data, bytes calldata _signatures)
         external
-        payable
         returns (DeliveryOutcome outcome)
     {
         // Read first, so the gas-mode tip measures from the same point as before
@@ -1001,7 +1000,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
      * updates the filter to any contract.
      * for future use case, this is the bridge's validator contract
      */
-    function setValidatorsFilter(address _validatorsFilter) external payable onlyOwner {
+    function setValidatorsFilter(address _validatorsFilter) external onlyOwner {
         // if this doesn't fail we are at least guaranteed that it has the method
         IBridgeValidators(_validatorsFilter).isValidator(address(0));
         validatorsFilter = _validatorsFilter;
@@ -1009,7 +1008,7 @@ contract TokenOmnibridgeBase is OwnableModule, Claimable, ReentrancyV2 {
     /**
      * mev protection management
      */
-    function setValidatorStatus(address _validator, bool _isValidator) external payable onlyOwner {
+    function setValidatorStatus(address _validator, bool _isValidator) external onlyOwner {
         isValidator[_validator] = _isValidator;
     }
 }

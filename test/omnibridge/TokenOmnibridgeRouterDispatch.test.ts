@@ -69,6 +69,73 @@ describe('TokenOmnibridgeRouter single delivery entry', () => {
         })
     })
 
+    // Nothing legitimately sends ether through these: the bridge and the mediator call without value, and
+    // the router never forwards value to the bridge. Ether sent to them would only be stuck in the router.
+    describe('refuses ether on every function that has no use for it', () => {
+        const nonPayableFunctions = ['safeExecuteSignaturesWithAutoGasLimit', 'onTokenBridged', 'setValidatorsFilter', 'setValidatorStatus']
+        let token!: any
+        let stubMediator!: any
+        let router!: any
+        let bridgeAccount!: HardhatEthersSigner
+        let routerWithAccountBridge!: any
+        let runner!: HardhatEthersSigner
+
+        const deploy = async () => {
+            signers = await hre.ethers.getSigners()
+            ;[owner, , runner, , bridgeAccount] = signers
+            token = await (await hre.ethers.getContractFactory('WETH')).deploy()
+            stubMediator = await (await hre.ethers.getContractFactory('StubMediator')).deploy(token)
+            router = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(stubMediator, token, owner)
+            await router.connect(owner).setValidatorStatus(runner, true)
+            await token.deposit({ value: oneEther })
+            await token.transfer(router, oneEther)
+            // a router whose bridge is a plain account, so the test can call onTokenBridged as the bridge with value
+            routerWithAccountBridge = await (await hre.ethers.getContractFactory('TokenOmnibridgeRouter')).deploy(bridgeAccount, token, owner)
+        }
+        beforeEach(async () => {
+            await loadFixture(deploy)
+        })
+
+        it('declares each of them nonpayable in the interface', async () => {
+            for (const name of nonPayableFunctions) {
+                expect(router.interface.getFunction(name)!.stateMutability, name).to.equal('nonpayable')
+            }
+        })
+
+        it('the entry reverts when sent ether, on a message it would otherwise deliver', async () => {
+            const message = buildMessage({
+                messageId: ethers.keccak256(ethers.toUtf8Bytes('dispatch-ether')),
+                sender: stubMediator.target as string,
+                executor: stubMediator.target as string,
+                innerCall: handleNativeCall({ token: token.target as string, recipient: router.target as string, value: oneEther, data: feeDirector(owner.address, 0n) }),
+            })
+            await expect(router.safeExecuteSignaturesWithAutoGasLimit(runner, message, '0x', { value: 1n })).to.be.revertedWithoutReason()
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
+        })
+
+        it('onTokenBridged reverts when the bridge sends ether', async () => {
+            await expect(
+                routerWithAccountBridge.connect(bridgeAccount).onTokenBridged(token, 0n, feeDirector(owner.address, 0n), { value: 1n }),
+            ).to.be.revertedWithoutReason()
+            expect(await hre.ethers.provider.getBalance(routerWithAccountBridge)).to.equal(0n)
+        })
+
+        it('the owner setters revert when sent ether', async () => {
+            await expect(router.connect(owner).setValidatorStatus(runner, true, { value: 1n })).to.be.revertedWithoutReason()
+            await expect(router.connect(owner).setValidatorsFilter(router, { value: 1n })).to.be.revertedWithoutReason()
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(0n)
+        })
+
+        it('still accepts ether from the wrapped-coin contract only', async () => {
+            await expect(owner.sendTransaction({ to: router.target, value: 1n })).to.be.reverted
+            // the unwrap path depends on this: the wrapped-coin contract pays the router on withdraw
+            const wrappedCoin = await hre.ethers.getImpersonatedSigner(token.target as string)
+            await hre.network.provider.send('hardhat_setBalance', [token.target, ethers.toBeHex(oneEther * 2n)])
+            await wrappedCoin.sendTransaction({ to: router.target, value: 1n })
+            expect(await hre.ethers.provider.getBalance(router)).to.equal(1n)
+        })
+    })
+
     describe('already relayed, stranded message (real bridge)', () => {
         const value = oneEther / 10n
         let user!: HardhatEthersSigner
