@@ -540,6 +540,46 @@ describe('Router stranding against the real deployed contracts on an Ethereum fo
             expect(directOnBridge.stranded, 'the bare real bridge strands at no gas level for this callback').to.equal(0)
         })
 
+        // Anyone can strand a delivery on purpose: the real bridge's safeExecuteSignaturesWithGasLimit runs the
+        // message with the gas the caller names, enough for the mediator but not for the router callback, and
+        // the mediator swallows the failed callback. The entry must then finish it, paying the runner its tip.
+        it('a strand made on purpose with safeExecuteSignaturesWithGasLimit on the real bridge is recovered through the entry', async function () {
+            if (!forked) return this.skip()
+            const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
+            const snapshot = await takeSnapshot()
+            const recipient = ethers.Wallet.createRandom().address
+            const { messageId, message, signatures } = await freshSignedMessage(recipient)
+
+            let strandingGas = 0n
+            for (let gas = 60_000n; gas <= 600_000n && strandingGas === 0n; gas += 2_000n) {
+                const attempt = await takeSnapshot()
+                const mined = await realBridge
+                    .safeExecuteSignaturesWithGasLimit(message, signatures, gas, { gasLimit: 3_000_000n })
+                    .then((transaction: any) => transaction.wait())
+                    .then(
+                        () => true,
+                        () => false,
+                    )
+                const stranded = mined && (await realBridge.messageCallStatus(messageId)) && (await weth.balanceOf(router)) === value
+                if (stranded) strandingGas = gas
+                if (!stranded) await attempt.restore()
+            }
+            console.log(`      the real bridge stranded the delivery with a message gas of ${strandingGas}`)
+            expect(strandingGas, 'some message gas strands the delivery').to.not.equal(0n)
+            expect(await realBridge.relayedMessages(messageId)).to.equal(true)
+            expect(await router.processed(messageId)).to.equal(false)
+            expect(await hre.ethers.provider.getBalance(recipient), 'the recipient is unpaid').to.equal(0n)
+
+            const runnerBefore = await hre.ethers.provider.getBalance(runner)
+            expect(await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit.staticCall(runner, message, signatures, { gasLimit: 2_000_000n })).to.equal(1n)
+            await (await router.connect(caller).safeExecuteSignaturesWithAutoGasLimit(runner, message, signatures, { gasLimit: 2_000_000n })).wait()
+            expect(await router.processed(messageId)).to.equal(true)
+            expect(await hre.ethers.provider.getBalance(recipient), 'the recipient is paid the value minus the tip').to.equal(value - tip)
+            expect((await hre.ethers.provider.getBalance(runner)) - runnerBefore, 'the runner earns the tip').to.equal(tip)
+            expect(await weth.balanceOf(router)).to.equal(0n)
+            await snapshot.restore()
+        })
+
         it('a callback that fails for a reason other than gas: the bare real bridge strands it, the entry reverts DeliveryNotCompleted', async function () {
             if (!forked) return this.skip()
             const { takeSnapshot } = await import('@nomicfoundation/hardhat-network-helpers')
