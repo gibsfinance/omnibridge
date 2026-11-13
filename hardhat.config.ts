@@ -48,6 +48,14 @@ const chains = {
   },
 }
 
+/**
+ * The accounts of a live network. `DEPLOYER_PRIVATE_KEY` wins when set, so a deploy needs no mnemonic;
+ * otherwise `MNEMONIC`, otherwise the public test phrase. Nothing here writes a key to disk.
+ */
+const liveAccounts = process.env.DEPLOYER_PRIVATE_KEY
+  ? [process.env.DEPLOYER_PRIVATE_KEY]
+  : { mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC }
+
 const config: HardhatUserConfig = {
   solidity: {
     compilers: [
@@ -122,9 +130,7 @@ const config: HardhatUserConfig = {
       url: process.env.RPC_11155111 || 'https://ethereum-sepolia-rpc.publicnode.com',
     },
     pulsechainV4: {
-      accounts: {
-        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
-      },
+      accounts: liveAccounts,
       url: process.env.RPC_943 || 'https://rpc.v4.testnet.pulsechain.com',
     },
     pulsechain: {

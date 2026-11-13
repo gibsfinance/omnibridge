@@ -1,3 +1,4 @@
+import './deploy-homefeeledger'
 import './deploy-wethomnibridgerouterv2'
 import './deploy-wbnbomnibridgerouter'
 import './deploy-tokenomnibridgerouter'
