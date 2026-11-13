@@ -6,15 +6,13 @@ type Input = {
   wnative: string
   collector: string
   rescue: string
-  admin: string
-  rate: string
   skipVerify: boolean
 }
 
 /** The only chain this task may broadcast to: PulseChain testnet v4. Other chains need a new constant. */
 const PULSECHAIN_TESTNET_V4 = 943n
-/** The highest gibs rate the contract accepts, in basis points (`MAXIMUM_GIBS_RATE`). */
-const MAXIMUM_GIBS_RATE = 100
+/** The account the owner approved as fee collector, rescue recipient and deployer on the testnet. */
+const APPROVED_TESTNET_ACCOUNT = '0xAF2ce0189f46f5663715b0b9ED2a10eA924AB9B0'
 /** The v4 testnet erc20 home mediator, the one that delivers tokens bridged from Sepolia. */
 const DEFAULT_MEDIATOR = '0x6B08a50865aDeCe6e3869D9AfbB316d0a0436B6c'
 /** Wrapped PLS on the v4 testnet (`nativeAssetOut` of bridge-sdk). */
@@ -23,10 +21,8 @@ const DEFAULT_WNATIVE = '0x70499adEBB11Efd915E3b69E700c331778628707'
 task('deploy-homefeeledger', 'deploys the home fee ledger on PulseChain testnet v4 (943)')
   .addOptionalParam('mediators', 'comma separated home mediators that may deliver and relay', DEFAULT_MEDIATOR)
   .addOptionalParam('wnative', 'the wrapped native token (WPLS)', DEFAULT_WNATIVE)
-  .addParam('collector', 'the account credited with gibs fees. It cannot change')
-  .addParam('rescue', 'the only account that receives rescued tokens. It cannot change')
-  .addParam('admin', 'the first admin. It must not be the zero address; call renounceAdmin() afterwards for none')
-  .addParam('rate', `the first gibs rate in basis points, at most ${MAXIMUM_GIBS_RATE}`)
+  .addOptionalParam('collector', 'the account credited with gibs fees. It cannot change', APPROVED_TESTNET_ACCOUNT)
+  .addOptionalParam('rescue', 'the only account that receives rescued tokens. It cannot change', APPROVED_TESTNET_ACCOUNT)
   .addFlag('skipVerify', 'do not submit the source to the explorer')
   .setAction(async (args: Input, hre: HardhatRuntimeEnvironment) => {
     const { ethers } = hre
@@ -38,12 +34,7 @@ task('deploy-homefeeledger', 'deploys the home fee ledger on PulseChain testnet 
     const wnative = ethers.getAddress(args.wnative)
     const collector = ethers.getAddress(args.collector)
     const rescue = ethers.getAddress(args.rescue)
-    const admin = ethers.getAddress(args.admin)
-    const rate = Number(args.rate)
-    if (!Number.isInteger(rate) || rate < 0 || rate > MAXIMUM_GIBS_RATE) {
-      throw new Error(`rate must be an integer from 0 to ${MAXIMUM_GIBS_RATE}`)
-    }
-    if ([collector, rescue, admin].includes(ethers.ZeroAddress)) throw new Error('an account is the zero address')
+    if ([collector, rescue].includes(ethers.ZeroAddress)) throw new Error('an account is the zero address')
     for (const contract of [...mediators, wnative]) {
       if ((await ethers.provider.getCode(contract)) === '0x') throw new Error(`no code at ${contract}`)
     }
@@ -54,7 +45,7 @@ task('deploy-homefeeledger', 'deploys the home fee ledger on PulseChain testnet 
 
     const contractId = 'contracts/helpers/HomeFeeLedger.sol:HomeFeeLedger'
     const HomeFeeLedger = await ethers.getContractFactory(contractId)
-    const inputs = [mediators, wnative, collector, rescue, admin, rate] as const
+    const inputs = [mediators, wnative, collector, rescue] as const
     const ledger = await HomeFeeLedger.deploy(...inputs)
     const transaction = ledger.deploymentTransaction()!
     console.log('deploy transaction %o', transaction.hash)
@@ -66,8 +57,6 @@ task('deploy-homefeeledger', 'deploys the home fee ledger on PulseChain testnet 
     console.log('constructor wrappedNative: %o', wnative)
     console.log('constructor gibsCollector: %o', collector)
     console.log('constructor rescueRecipient: %o', rescue)
-    console.log('constructor admin: %o', admin)
-    console.log('constructor initialGibsRate: %o', rate)
     if (args.skipVerify) return
     try {
       await hre.run('verify:verify', { address, contract: contractId, constructorArguments: inputs })

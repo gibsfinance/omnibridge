@@ -12,7 +12,7 @@ const WPLS_MEDIATOR = '0x0e18d0d556b652794EF12Bf68B2dC857EF5f3996'
 const WPLS = '0xA1077a294dDE1B09bB078844df40758a5D0f9a27'
 // USDC from Ethereum, bridged to PulseChain (6 decimals)
 const USDC = '0x15D38573d2feeb82e7ad5187aB8c1D52810B1f07'
-// the fee, in basis points, that the real mediators keep on a home to foreign transfer (observed on the fork)
+// the fee, in parts of 10_000, that the real mediators keep on a home to foreign transfer (observed on the fork)
 const MEDIATOR_FEE = 30n
 const ETHEREUM_USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
 
@@ -76,7 +76,7 @@ describe('HomeFeeLedger on a PulseChain fork', function () {
         ;[, user, collector, recipient, partnerPayout] = signers
         usdc = new ethers.Contract(USDC, tokenAbi, user)
         const factory = await hre.ethers.getContractFactory('HomeFeeLedger')
-        ledger = await factory.deploy([MAIN_MEDIATOR, WPLS_MEDIATOR], WPLS, collector, signers[7], signers[0], 30)
+        ledger = await factory.deploy([MAIN_MEDIATOR, WPLS_MEDIATOR], WPLS, collector, signers[7])
     })
 
     after(async () => {
@@ -100,10 +100,13 @@ describe('HomeFeeLedger on a PulseChain fork', function () {
         const mediator = await impersonate(MAIN_MEDIATOR)
         // the mediator is the minter of its bridged tokens
         await usdc.connect(mediator).mint(user.address, amount)
-        await ledger.connect(partnerPayout).registerPartner(partnerPayout, 50)
         await usdc.approve(ledger, amount)
         const supplyBefore = await usdc.totalSupply()
-        const tx = await ledger.connect(user).relay(MAIN_MEDIATOR, USDC, amount, recipient.address, '0x', 1, 80)
+        const tx = await ledger.connect(user).relay(MAIN_MEDIATOR, USDC, amount, recipient.address, '0x', {
+            feeRateE18: 3n * 10n ** 15n,
+            partner: partnerPayout.address,
+            partnerRateE18: 5n * 10n ** 15n,
+        })
         const receipt = await tx.wait()
         console.log(`      outbound relay gas on the fork: ${receipt.gasUsed}`)
         const gibsFee = (amount * 30n) / 10_000n
@@ -129,20 +132,27 @@ describe('HomeFeeLedger on a PulseChain fork', function () {
         await usdc.connect(mediator).mint(await ledger.getAddress(), value)
         const before = await usdc.balanceOf(recipient)
         const owedBefore = await ledger.owed(USDC, collector)
-        const tx = await ledger.connect(mediator).onTokenBridged(USDC, value, instruction(recipient.address, 1n, 80n))
+        const tx = await ledger.connect(mediator).onTokenBridged(USDC, value, instruction(recipient.address, { feeRate: 3n * 10n ** 15n, partner: partnerPayout.address, partnerRate: 5n * 10n ** 15n }))
         const receipt = await tx.wait()
         console.log(`      inbound split gas on the fork: ${receipt.gasUsed}`)
         const gibsFee = (value * 30n) / 10_000n
         const partnerFee = (value * 50n) / 10_000n
         expect((await usdc.balanceOf(recipient)) - before).to.equal(value - gibsFee - partnerFee)
         expect((await ledger.owed(USDC, collector)) - owedBefore).to.equal(gibsFee)
+        expect(await ledger.owed(USDC, partnerPayout)).to.equal((value * 50n) / 10_000n + (1_000n * 10n ** 6n * 50n) / 10_000n)
     })
 
     it('relays native PLS through the WPLS bridge mediator', async () => {
         const amount = 1_000_000n * 10n ** 18n
         const wplsBridge = new ethers.Contract(WPLS_MEDIATOR, mediatorAbi, hre.ethers.provider)
         console.log(`      WPLS registered on the WPLS bridge: ${await wplsBridge.isTokenRegistered(WPLS)}`)
-        const tx = await ledger.connect(user).relayNative(WPLS_MEDIATOR, recipient.address, '0x', 0, 30, { value: amount })
+        const tx = await ledger.connect(user).relayNative(
+            WPLS_MEDIATOR,
+            recipient.address,
+            '0x',
+            { feeRateE18: 3n * 10n ** 15n, partner: hre.ethers.ZeroAddress, partnerRateE18: 0n },
+            { value: amount },
+        )
         const receipt = await tx.wait()
         console.log(`      relayNative gas on the fork: ${receipt.gasUsed}`)
         const gibsFee = (amount * 30n) / 10_000n
@@ -161,7 +171,7 @@ describe('HomeFeeLedger on a PulseChain fork', function () {
         await wpls.deposit({ value })
         await wpls.transfer(await ledger.getAddress(), value)
         const before = await hre.ethers.provider.getBalance(recipient)
-        await ledger.connect(mediator).onTokenBridged(WPLS, value, instruction(recipient.address, 0n, 30n, true))
+        await ledger.connect(mediator).onTokenBridged(WPLS, value, instruction(recipient.address, { unwrap: true }))
         expect((await hre.ethers.provider.getBalance(recipient)) - before).to.equal(value - (value * 30n) / 10_000n)
     })
 })

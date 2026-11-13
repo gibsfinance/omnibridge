@@ -136,9 +136,16 @@ export function contains(args: Record<string, unknown>, key: string, value: unkn
     }
 }
 
-// encodes the data HomeFeeLedger.onTokenBridged expects (128 bytes)
-export const feeLedgerInstruction = (recipient: string, partnerId = 0n, maximumTotalRate = 10_000n, unwrap = false) =>
-    ethers.AbiCoder.defaultAbiCoder().encode(
-        ['address', 'uint256', 'uint16', 'bool'],
-        [recipient, partnerId, maximumTotalRate, unwrap],
-    )
+// a rate in 1e18 fixed point (1e18 is 100 percent) from a percent, in steps of 0.01 percent: percentRate(0.3) = 3e15
+export const percentRate = (percent: number) => BigInt(Math.round(percent * 100)) * 10n ** 14n
+
+// encodes the data HomeFeeLedger.onTokenBridged expects (160 bytes):
+// (recipient, unwrap, feeRateE18, partner, partnerRateE18), both rates in 1e18 fixed point
+export const feeLedgerInstruction = (
+  recipient: string,
+  { unwrap = false, feeRate = percentRate(0.3), partner = ethers.ZeroAddress, partnerRate = 0n } = {},
+) =>
+  ethers.AbiCoder.defaultAbiCoder().encode(
+    ['address', 'bool', 'uint256', 'address', 'uint256'],
+    [recipient, unwrap, feeRate, partner, partnerRate],
+  )

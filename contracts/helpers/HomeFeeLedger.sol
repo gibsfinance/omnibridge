@@ -10,32 +10,60 @@ import {IERC20Receiver} from "../interfaces/IERC20Receiver.sol";
 import {IOmnibridge} from "../interfaces/IOmnibridge.sol";
 import {IWETH as IWNative} from "../interfaces/IWETH.sol";
 
+/// @dev The base of every rate: 1e18 is 100 percent.
+uint256 constant RATE_BASE = 1e18;
+/// @dev The highest gibs fee, 1e16 (1 percent). No data can ask for more.
+uint256 constant MAXIMUM_FEE_RATE = 1e16;
+/// @dev The highest partner fee, 1e16 (1 percent). No data can ask for more.
+uint256 constant MAXIMUM_PARTNER_RATE = 1e16;
+
 /**
  * @title InboundInstruction
  * @dev Decodes the `data` sent with an inbound transfer without ever reverting.
- * The only valid layout is `abi.encode(address recipient, uint256 partnerId, uint16 maximumTotalRate, bool unwrap)`.
+ * The only valid layout is
+ * `abi.encode(address recipient, bool unwrap, uint256 feeRateE18, address partner, uint256 partnerRateE18)`.
+ * The sender of the bridged transfer writes the fee, so the fee is part of what the sender signed.
  */
 library InboundInstruction {
-    /// @dev Exact byte length of a valid instruction: four 32 byte words.
-    uint256 internal constant LENGTH = 128;
+    /// @dev Exact byte length of a valid instruction: five 32 byte words.
+    uint256 internal constant LENGTH = 160;
 
     /**
      * @dev Result of reading an instruction.
      * @param recipient the account that receives the tokens after fees.
-     * @param partnerId the partner that earns a fee, or 0 for none.
-     * @param maximumTotalRate the most the sender agrees to pay, in basis points.
      * @param unwrap true to pay the wrapped native token out as native coin.
+     * @param feeRateE18 the gibs fee (1e18 is 100 percent), at most MAXIMUM_FEE_RATE.
+     * @param partner the account that earns the partner fee, or zero for none.
+     * @param partnerRateE18 the partner fee (1e18 is 100 percent), at most MAXIMUM_PARTNER_RATE.
+     * It is zero when `partner` is the zero address.
      */
     struct Instruction {
         address recipient;
-        uint256 partnerId;
-        uint16 maximumTotalRate;
         bool unwrap;
+        uint256 feeRateE18;
+        address partner;
+        uint256 partnerRateE18;
+    }
+
+    /**
+     * @dev True when the three fee fields obey the caps, and no partner fee is charged without a partner.
+     * @param feeRateE18 the gibs fee (1e18 is 100 percent).
+     * @param partner the partner account, or zero.
+     * @param partnerRateE18 the partner fee (1e18 is 100 percent).
+     */
+    function feesAreValid(uint256 feeRateE18, address partner, uint256 partnerRateE18)
+        internal
+        pure
+        returns (bool)
+    {
+        if (feeRateE18 > MAXIMUM_FEE_RATE) return false;
+        if (partnerRateE18 > MAXIMUM_PARTNER_RATE) return false;
+        return partner != address(0) || partnerRateE18 == 0;
     }
 
     /**
      * @dev Reads an instruction. Returns `valid` false when the length is wrong,
-     * or when any word holds bits that its type cannot hold (a dirty word).
+     * when any word holds bits that its type cannot hold (a dirty word), or when the fees are not valid.
      * @param data the raw bytes passed by the mediator.
      * @return valid true when `data` is a well formed instruction.
      * @return instruction the decoded values, all zero when `valid` is false.
@@ -43,15 +71,18 @@ library InboundInstruction {
     function read(bytes calldata data) internal pure returns (bool valid, Instruction memory instruction) {
         if (data.length != LENGTH) return (false, instruction);
         uint256 recipientWord = uint256(bytes32(data[0:32]));
-        uint256 rateWord = uint256(bytes32(data[64:96]));
-        uint256 unwrapWord = uint256(bytes32(data[96:128]));
-        if (recipientWord > type(uint160).max) return (false, instruction);
-        if (rateWord > type(uint16).max) return (false, instruction);
+        uint256 unwrapWord = uint256(bytes32(data[32:64]));
+        uint256 feeWord = uint256(bytes32(data[64:96]));
+        uint256 partnerWord = uint256(bytes32(data[96:128]));
+        uint256 partnerRateWord = uint256(bytes32(data[128:160]));
+        if (recipientWord > type(uint160).max || partnerWord > type(uint160).max) return (false, instruction);
         if (unwrapWord > 1) return (false, instruction);
+        if (!feesAreValid(feeWord, address(uint160(partnerWord)), partnerRateWord)) return (false, instruction);
         instruction.recipient = address(uint160(recipientWord));
-        instruction.partnerId = uint256(bytes32(data[32:64]));
-        instruction.maximumTotalRate = uint16(rateWord);
         instruction.unwrap = unwrapWord == 1;
+        instruction.feeRateE18 = feeWord;
+        instruction.partner = address(uint160(partnerWord));
+        instruction.partnerRateE18 = partnerRateWord;
         return (true, instruction);
     }
 }
@@ -62,25 +93,27 @@ library InboundInstruction {
  * The fee is a gibs fee plus an optional partner fee. The partner fee is added to the gibs fee.
  * Fees are never sent out when they are earned. They are credited, and each owner withdraws.
  *
- * Outbound (home to foreign): `relay` and `relayNative` take the fee, then call a mediator. They may revert.
+ * There is no admin. Nothing here can be set after construction. The fee is not stored in this contract:
+ * the sender of each transfer writes the fee rates into the transfer data, inside the hard caps
+ * MAXIMUM_FEE_RATE and MAXIMUM_PARTNER_RATE (1e16 each, so 2e16 in total).
+ * A sender can only write the fee for its own tokens, because the data travels with that transfer only.
+ *
+ * Outbound (home to foreign): `relay` and `relayNative` take the fee the caller names, then call a mediator.
+ * They may revert.
  * Inbound (foreign to home): a mediator delivers tokens to this contract and calls `onTokenBridged`.
  * The mediator ignores a failed callback, so after the caller check that function never reverts.
  * Anything it cannot place stays outside `totalOwed`. Anyone can send it to `rescueRecipient` with
  * `rescueUnaccounted`. The recipient is fixed at construction, so no key chooses where rescued tokens go.
- *
- * The admin only sets the gibs rate (below a fixed ceiling) and hands the admin role on.
- * The admin cannot move any token, and cannot touch the ledger, the collector, the rescue recipient,
- * the mediator list, or any partner.
  */
 contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     using SafeERC20 for IERC20;
 
-    /// @notice The base for every rate. 10_000 basis points is 100 percent.
-    uint256 public constant BASIS_POINTS = 10_000;
-    /// @notice The highest gibs rate in basis points. No function can raise it.
-    uint16 public constant MAXIMUM_GIBS_RATE = 100;
-    /// @notice The highest partner rate in basis points. No function can raise it.
-    uint16 public constant MAXIMUM_PARTNER_RATE = 100;
+    /// @notice The base for every rate. 1e18 is 100 percent.
+    uint256 public constant RATE_BASE_E18 = RATE_BASE;
+    /// @notice The highest gibs fee rate, 1e16 (1 percent). Nothing can raise it.
+    uint256 public constant MAXIMUM_FEE_RATE_E18 = MAXIMUM_FEE_RATE;
+    /// @notice The highest partner fee rate, 1e16 (1 percent). Nothing can raise it.
+    uint256 public constant MAXIMUM_PARTNER_RATE_E18 = MAXIMUM_PARTNER_RATE;
     /// @notice The gas given to a native coin payout to an inbound recipient.
     uint256 public constant NATIVE_PAYOUT_GAS = 100_000;
 
@@ -88,17 +121,15 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     uint256 private constant _ENTERED = 2;
 
     /**
-     * @dev A registered partner.
-     * @param payout the account credited with the partner fee.
-     * @param rate the partner fee in basis points.
-     * @param controller the account that may change this partner.
-     * @param pendingController the account that may accept control, set by `transferPartnerControl`.
+     * @dev The fee a caller of `relay` or `relayNative` agrees to.
+     * @param feeRateE18 the gibs fee (1e18 is 100 percent), at most MAXIMUM_FEE_RATE.
+     * @param partner the account credited with the partner fee, or zero for none.
+     * @param partnerRateE18 the partner fee (1e18 is 100 percent), at most MAXIMUM_PARTNER_RATE.
      */
-    struct Partner {
-        address payout;
-        uint16 rate;
-        address controller;
-        address pendingController;
+    struct FeeTerms {
+        uint256 feeRateE18;
+        address partner;
+        uint256 partnerRateE18;
     }
 
     /// @dev Why `onTokenBridged` left tokens outside the ledger.
@@ -124,34 +155,17 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     /// It is separate from `gibsCollector`, so rescued tokens never mix with fee accounting.
     address public immutable rescueRecipient;
 
-    /// @notice The account that sets the gibs rate. Zero after `renounceAdmin`.
-    address public admin;
-    /// @notice The account that may accept the admin role.
-    address public pendingAdmin;
-    /// @notice The gibs fee in basis points.
-    uint16 public gibsRate;
-    /// @notice The number of partners registered. The first partner has id 1.
-    uint256 public partnerCount;
-
     /// @notice True for a mediator that may deliver tokens and receive relays. Fixed at construction.
     mapping(address => bool) public isMediator;
-    /// @notice The registered partners by id. Id 0 means no partner.
-    mapping(uint256 => Partner) public partners;
     /// @notice What `account` can withdraw of `token`. The zero address as token means native coin.
     mapping(address => mapping(address => uint256)) public owed;
     /// @notice The sum of `owed` over all accounts for `token`.
     mapping(address => uint256) public totalOwed;
 
-    error NotAdmin();
-    error NotPendingAdmin();
-    error NotPartnerController();
-    error NotPendingPartnerController();
     error NotMediator();
     error ZeroAddress();
     error NoMediators();
-    error RateTooHigh();
-    error UnknownPartner();
-    error RateAboveMaximum();
+    error InvalidFees();
     error NothingToPay();
     error NothingReceived();
     error TransferFailed();
@@ -159,22 +173,6 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
 
     /// @notice Emitted once for each mediator allowed at construction.
     event MediatorAllowed(address indexed mediator);
-    /// @notice Emitted when the gibs rate changes.
-    event GibsRateSet(uint16 rate);
-    /// @notice Emitted when an admin transfer starts.
-    event AdminTransferStarted(address indexed admin, address indexed pendingAdmin);
-    /// @notice Emitted when the admin role changes hands. The new admin is zero after a renounce.
-    event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
-    /// @notice Emitted when a partner registers.
-    event PartnerRegistered(uint256 indexed partnerId, address indexed controller, address payout, uint16 rate);
-    /// @notice Emitted when a partner payout address changes.
-    event PartnerPayoutSet(uint256 indexed partnerId, address payout);
-    /// @notice Emitted when a partner rate changes.
-    event PartnerRateSet(uint256 indexed partnerId, uint16 rate);
-    /// @notice Emitted when a partner control transfer starts.
-    event PartnerControlTransferStarted(uint256 indexed partnerId, address indexed pendingController);
-    /// @notice Emitted when a partner control transfer completes.
-    event PartnerControlTransferred(uint256 indexed partnerId, address indexed controller);
     /// @notice Emitted for each credit to the ledger. `reason` tells which fee or fallback it is.
     event Credited(address indexed token, address indexed account, uint256 amount, CreditReason reason);
     /// @notice Emitted when an account withdraws from the ledger.
@@ -189,7 +187,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         address receiver,
         uint256 received,
         uint256 sent,
-        uint256 partnerId
+        address partner
     );
     /// @notice Emitted when an inbound delivery is split and paid.
     event Delivered(
@@ -199,37 +197,23 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         uint256 value,
         uint256 available,
         uint256 paid,
-        uint256 partnerId
+        address partner
     );
     /// @notice Emitted when an inbound delivery leaves tokens outside the ledger.
     event Skipped(address indexed mediator, address indexed token, uint256 value, SkipReason reason);
 
     /**
      * @dev Fixes the mediators, the wrapped native token, the collector and the rescue recipient.
-     * Sets the first rate and admin.
      * @param mediators the home mediators that may deliver tokens and receive relays. At least one.
      * @param _wNative the wrapped native token (WPLS).
      * @param _gibsCollector the account credited with gibs fees. It cannot change.
      * @param _rescueRecipient the only account that receives rescued tokens. It cannot change.
-     * @param _admin the first admin.
-     * @param initialGibsRate the first gibs rate in basis points, at most MAXIMUM_GIBS_RATE.
      */
-    constructor(
-        address[] memory mediators,
-        IWNative _wNative,
-        address _gibsCollector,
-        address _rescueRecipient,
-        address _admin,
-        uint16 initialGibsRate
-    ) {
+    constructor(address[] memory mediators, IWNative _wNative, address _gibsCollector, address _rescueRecipient) {
         if (mediators.length == 0) revert NoMediators();
-        if (
-            address(_wNative) == address(0) || _gibsCollector == address(0) || _rescueRecipient == address(0)
-                || _admin == address(0)
-        ) {
+        if (address(_wNative) == address(0) || _gibsCollector == address(0) || _rescueRecipient == address(0)) {
             revert ZeroAddress();
         }
-        if (initialGibsRate > MAXIMUM_GIBS_RATE) revert RateTooHigh();
         for (uint256 index = 0; index < mediators.length; index++) {
             address mediator = mediators[index];
             if (mediator == address(0)) revert ZeroAddress();
@@ -239,21 +223,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         wNative = _wNative;
         gibsCollector = _gibsCollector;
         rescueRecipient = _rescueRecipient;
-        admin = _admin;
-        gibsRate = initialGibsRate;
         reentrant = _NOT_ENTERED;
-        emit GibsRateSet(initialGibsRate);
-        emit AdminTransferred(address(0), _admin);
-    }
-
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert NotAdmin();
-        _;
-    }
-
-    modifier onlyPartnerController(uint256 partnerId) {
-        if (msg.sender != partners[partnerId].controller) revert NotPartnerController();
-        _;
     }
 
     /**
@@ -261,47 +231,6 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
      */
     receive() external payable {
         if (msg.sender != address(wNative)) revert SenderNotWrappedNative();
-    }
-
-    // ---------------------------------------------------------------- admin
-
-    /**
-     * @notice Sets the gibs fee.
-     * @param rate the new gibs rate in basis points, at most MAXIMUM_GIBS_RATE.
-     */
-    function setGibsRate(uint16 rate) external onlyAdmin {
-        if (rate > MAXIMUM_GIBS_RATE) revert RateTooHigh();
-        gibsRate = rate;
-        emit GibsRateSet(rate);
-    }
-
-    /**
-     * @notice Starts a transfer of the admin role. The new admin must call `acceptAdmin`.
-     * @param newAdmin the proposed admin. Not the zero address.
-     */
-    function transferAdmin(address newAdmin) external onlyAdmin {
-        if (newAdmin == address(0)) revert ZeroAddress();
-        pendingAdmin = newAdmin;
-        emit AdminTransferStarted(msg.sender, newAdmin);
-    }
-
-    /**
-     * @notice Completes a transfer of the admin role. Only the pending admin can call it.
-     */
-    function acceptAdmin() external {
-        if (msg.sender != pendingAdmin) revert NotPendingAdmin();
-        emit AdminTransferred(admin, msg.sender);
-        admin = msg.sender;
-        pendingAdmin = address(0);
-    }
-
-    /**
-     * @notice Gives up the admin role for good. The gibs rate then stays fixed.
-     */
-    function renounceAdmin() external onlyAdmin {
-        emit AdminTransferred(msg.sender, address(0));
-        admin = address(0);
-        pendingAdmin = address(0);
     }
 
     /**
@@ -318,70 +247,6 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         uint256 amount = balance - accounted;
         emit Rescued(token, rescueRecipient, amount);
         _send(token, rescueRecipient, amount);
-    }
-
-    // ------------------------------------------------------------- partners
-
-    /**
-     * @notice Registers a partner. Anyone can register. The caller becomes the controller.
-     * @param payout the account credited with the partner fee. Not the zero address.
-     * @param rate the partner fee in basis points, at most MAXIMUM_PARTNER_RATE.
-     * @return partnerId the new id. The first id is 1.
-     */
-    function registerPartner(address payout, uint16 rate) external returns (uint256 partnerId) {
-        if (payout == address(0)) revert ZeroAddress();
-        if (rate > MAXIMUM_PARTNER_RATE) revert RateTooHigh();
-        partnerId = ++partnerCount;
-        partners[partnerId] = Partner({payout: payout, rate: rate, controller: msg.sender, pendingController: address(0)});
-        emit PartnerRegistered(partnerId, msg.sender, payout, rate);
-    }
-
-    /**
-     * @notice Changes the account credited with a partner fee. Only the controller can call it.
-     * @param partnerId the partner to change.
-     * @param payout the new payout account. Not the zero address.
-     */
-    function setPartnerPayout(uint256 partnerId, address payout) external onlyPartnerController(partnerId) {
-        if (payout == address(0)) revert ZeroAddress();
-        partners[partnerId].payout = payout;
-        emit PartnerPayoutSet(partnerId, payout);
-    }
-
-    /**
-     * @notice Changes a partner fee. Only the controller can call it.
-     * @param partnerId the partner to change.
-     * @param rate the new rate in basis points, at most MAXIMUM_PARTNER_RATE.
-     */
-    function setPartnerRate(uint256 partnerId, uint16 rate) external onlyPartnerController(partnerId) {
-        if (rate > MAXIMUM_PARTNER_RATE) revert RateTooHigh();
-        partners[partnerId].rate = rate;
-        emit PartnerRateSet(partnerId, rate);
-    }
-
-    /**
-     * @notice Starts a transfer of partner control. The new controller must call `acceptPartnerControl`.
-     * @param partnerId the partner to hand over.
-     * @param newController the proposed controller. Not the zero address.
-     */
-    function transferPartnerControl(uint256 partnerId, address newController)
-        external
-        onlyPartnerController(partnerId)
-    {
-        if (newController == address(0)) revert ZeroAddress();
-        partners[partnerId].pendingController = newController;
-        emit PartnerControlTransferStarted(partnerId, newController);
-    }
-
-    /**
-     * @notice Completes a transfer of partner control. Only the pending controller can call it.
-     * @param partnerId the partner to take over.
-     */
-    function acceptPartnerControl(uint256 partnerId) external {
-        Partner storage partner = partners[partnerId];
-        if (msg.sender != partner.pendingController) revert NotPendingPartnerController();
-        partner.controller = msg.sender;
-        partner.pendingController = address(0);
-        emit PartnerControlTransferred(partnerId, msg.sender);
     }
 
     // --------------------------------------------------------------- ledger
@@ -408,15 +273,14 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
 
     /**
      * @notice Sends tokens from home to the foreign chain through an allowed mediator.
-     * Takes the gibs fee and the partner fee, then bridges the rest. Reverts on any problem.
+     * Takes the gibs fee and the partner fee the caller names, then bridges the rest. Reverts on any problem.
      * The caller must approve this contract first. The amount counted is what arrives, not `amount`.
      * @param mediator an allowed home mediator.
      * @param token the token to send.
      * @param amount the amount to pull from the caller, before fees.
      * @param receiver the receiver on the foreign chain.
      * @param data passed to the mediator unchanged. It is not read here.
-     * @param partnerId the partner that earns a fee, or 0 for none. An unknown id reverts.
-     * @param maximumTotalRate the most the caller agrees to pay in basis points. A higher rate reverts.
+     * @param terms the fee the caller pays. Rates above the caps, or a partner rate with no partner, revert.
      */
     function relay(
         address mediator,
@@ -424,35 +288,31 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         uint256 amount,
         address receiver,
         bytes calldata data,
-        uint256 partnerId,
-        uint16 maximumTotalRate
+        FeeTerms calldata terms
     ) external nonReentrant {
         if (!isMediator[mediator]) revert NotMediator();
         uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         uint256 received = IERC20(token).balanceOf(address(this)) - before;
-        _relay(mediator, token, received, receiver, data, partnerId, maximumTotalRate);
+        _relay(mediator, token, received, receiver, data, terms);
     }
 
     /**
      * @notice Wraps native coin and sends it from home to the foreign chain through an allowed mediator.
-     * Takes the gibs fee and the partner fee, then bridges the rest. Reverts on any problem.
+     * Takes the gibs fee and the partner fee the caller names, then bridges the rest. Reverts on any problem.
      * @param mediator an allowed home mediator.
      * @param receiver the receiver on the foreign chain.
      * @param data passed to the mediator unchanged. It is not read here.
-     * @param partnerId the partner that earns a fee, or 0 for none. An unknown id reverts.
-     * @param maximumTotalRate the most the caller agrees to pay in basis points. A higher rate reverts.
+     * @param terms the fee the caller pays. Rates above the caps, or a partner rate with no partner, revert.
      */
-    function relayNative(
-        address mediator,
-        address receiver,
-        bytes calldata data,
-        uint256 partnerId,
-        uint16 maximumTotalRate
-    ) external payable nonReentrant {
+    function relayNative(address mediator, address receiver, bytes calldata data, FeeTerms calldata terms)
+        external
+        payable
+        nonReentrant
+    {
         if (!isMediator[mediator]) revert NotMediator();
         wNative.deposit{value: msg.value}();
-        _relay(mediator, address(wNative), msg.value, receiver, data, partnerId, maximumTotalRate);
+        _relay(mediator, address(wNative), msg.value, receiver, data, terms);
     }
 
     // -------------------------------------------------------------- inbound
@@ -463,16 +323,16 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
      *
      * Order of work: read the balance that is not owed to anyone, take `available` as the smaller of that and `value`,
      * read the instruction, then split `available`.
-     * If the instruction is malformed, the recipient is zero, or nothing is available, the tokens stay outside
-     * `totalOwed` and `Skipped` is emitted. The admin can rescue them.
-     * An unknown partner id counts as no partner.
-     * If gibs rate plus partner rate is above the instruction's maximum, the excess is cut from the partner fee first,
-     * then from the gibs fee.
-     * Fees are credited to the ledger. The rest is paid to the recipient. If the payment fails for any reason,
-     * the rest is credited to the recipient in the ledger. A failed native unwrap credits the wrapped token.
+     * If the instruction is malformed (this includes a rate above its cap, or a partner rate with no partner),
+     * the recipient is zero, or nothing is available, the tokens stay outside `totalOwed` and `Skipped` is emitted.
+     * Anyone can then send them to the fixed rescue recipient with `rescueUnaccounted`.
+     * The gibs fee is `available` times the fee rate, rounded down. The partner fee is `available` times the
+     * partner rate, rounded down. Both are credited to the ledger. The rest is paid to the recipient.
+     * If the payment fails for any reason, the rest is credited to the recipient in the ledger.
+     * A failed native unwrap credits the wrapped token.
      * @param token the token the mediator delivered.
      * @param value the amount the mediator says it delivered.
-     * @param data `abi.encode(address recipient, uint256 partnerId, uint16 maximumTotalRate, bool unwrap)`.
+     * @param data `abi.encode(address recipient, bool unwrap, uint256 feeRateE18, address partner, uint256 partnerRateE18)`.
      */
     function onTokenBridged(address token, uint256 value, bytes calldata data) external override {
         if (!isMediator[msg.sender]) revert NotMediator();
@@ -494,18 +354,12 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         uint256 available = _available(token, value);
         if (available == 0) return _skip(token, value, SkipReason.NothingAvailable);
 
-        Partner memory partner;
-        if (instruction.partnerId != 0 && instruction.partnerId <= partnerCount) {
-            partner = partners[instruction.partnerId];
-        }
-        (uint256 gibsFee, uint256 partnerFee) =
-            _fees(available, gibsRate, partner.rate, instruction.maximumTotalRate);
+        uint256 gibsFee = Math.mulDiv(available, instruction.feeRateE18, RATE_BASE);
+        uint256 partnerFee = Math.mulDiv(available, instruction.partnerRateE18, RATE_BASE);
         uint256 rest = available - gibsFee - partnerFee;
-        _creditFees(token, gibsFee, partner.payout, partnerFee);
+        _creditFees(token, gibsFee, instruction.partner, partnerFee);
         if (rest > 0) _pay(token, instruction.recipient, rest, instruction.unwrap);
-        emit Delivered(
-            msg.sender, token, instruction.recipient, value, available, rest, instruction.partnerId
-        );
+        emit Delivered(msg.sender, token, instruction.recipient, value, available, rest, instruction.partner);
     }
 
     function _skip(address token, uint256 value, SkipReason reason) internal {
@@ -523,35 +377,14 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         return free < value ? free : value;
     }
 
-    /**
-     * @dev Splits `amount` into a gibs fee and a partner fee.
-     * When the two rates add up to more than `maximumTotalRate`, the partner rate is cut first, then the gibs rate.
-     */
-    function _fees(uint256 amount, uint16 gibsRateNow, uint16 partnerRate, uint16 maximumTotalRate)
-        internal
-        pure
-        returns (uint256 gibsFee, uint256 partnerFee)
-    {
-        uint256 gibsCharged = gibsRateNow;
-        uint256 partnerCharged = partnerRate;
-        uint256 excess = gibsCharged + partnerCharged > maximumTotalRate
-            ? gibsCharged + partnerCharged - maximumTotalRate
-            : 0;
-        uint256 partnerCut = excess < partnerCharged ? excess : partnerCharged;
-        partnerCharged -= partnerCut;
-        gibsCharged -= excess - partnerCut;
-        gibsFee = Math.mulDiv(amount, gibsCharged, BASIS_POINTS);
-        partnerFee = Math.mulDiv(amount, partnerCharged, BASIS_POINTS);
-    }
-
-    function _creditFees(address token, uint256 gibsFee, address partnerPayout, uint256 partnerFee) internal {
+    function _creditFees(address token, uint256 gibsFee, address partner, uint256 partnerFee) internal {
         if (gibsFee > 0) {
             owed[token][gibsCollector] += gibsFee;
             emit Credited(token, gibsCollector, gibsFee, CreditReason.GibsFee);
         }
         if (partnerFee > 0) {
-            owed[token][partnerPayout] += partnerFee;
-            emit Credited(token, partnerPayout, partnerFee, CreditReason.PartnerFee);
+            owed[token][partner] += partnerFee;
+            emit Credited(token, partner, partnerFee, CreditReason.PartnerFee);
         }
         totalOwed[token] += gibsFee + partnerFee;
     }
@@ -570,7 +403,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     /**
      * @dev Unwraps and sends native coin. Returns false with the wrapped tokens still held when it cannot.
      * When the send fails after the unwrap, the coin is wrapped again.
-     * Should the wrap fail as well, the coin stays here outside the ledger and the admin can rescue it.
+     * Should the wrap fail as well, the coin stays here outside the ledger and anyone can send it to the rescue recipient.
      */
     function _unwrapAndSend(address recipient, uint256 amount) internal returns (bool) {
         (bool unwrapped,) = address(wNative).call(abi.encodeCall(IWNative.withdraw, (amount)));
@@ -604,25 +437,21 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         uint256 received,
         address receiver,
         bytes calldata data,
-        uint256 partnerId,
-        uint16 maximumTotalRate
+        FeeTerms calldata terms
     ) internal {
-        Partner memory partner;
-        if (partnerId != 0) {
-            if (partnerId > partnerCount) revert UnknownPartner();
-            partner = partners[partnerId];
+        if (!InboundInstruction.feesAreValid(terms.feeRateE18, terms.partner, terms.partnerRateE18)) {
+            revert InvalidFees();
         }
-        if (uint256(gibsRate) + partner.rate > maximumTotalRate) revert RateAboveMaximum();
         if (received == 0) revert NothingReceived();
-        uint256 gibsFee = Math.mulDiv(received, gibsRate, BASIS_POINTS);
-        uint256 partnerFee = Math.mulDiv(received, partner.rate, BASIS_POINTS);
+        uint256 gibsFee = Math.mulDiv(received, terms.feeRateE18, RATE_BASE);
+        uint256 partnerFee = Math.mulDiv(received, terms.partnerRateE18, RATE_BASE);
         uint256 sent = received - gibsFee - partnerFee;
         if (sent == 0) revert NothingReceived();
-        _creditFees(token, gibsFee, partner.payout, partnerFee);
+        _creditFees(token, gibsFee, terms.partner, partnerFee);
         IERC20(token).forceApprove(mediator, sent);
         IOmnibridge(mediator).relayTokensAndCall(token, receiver, sent, data);
         if (IERC20(token).allowance(address(this), mediator) != 0) IERC20(token).forceApprove(mediator, 0);
-        emit Relayed(mediator, token, msg.sender, receiver, received, sent, partnerId);
+        emit Relayed(mediator, token, msg.sender, receiver, received, sent, terms.partner);
     }
 
     function _withdraw(address token, address to) internal {

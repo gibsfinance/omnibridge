@@ -52,20 +52,20 @@ A fee is a gibs fee plus an optional partner fee. The partner fee is added to th
 
 ### Fees and limits
 
-* The gibs rate is set by the admin. It can never be above `MAXIMUM_GIBS_RATE` (100 basis points, 1%).
-* A partner registers freely with `registerPartner(payout, rate)`. Ids start at 1. Id 0 means no partner.
-* A partner rate can never be above `MAXIMUM_PARTNER_RATE` (100 basis points).
-* The caller of a transfer states `maximumTotalRate`. Outbound transfers revert above it.
-  Inbound transfers charge only up to it, and cut the partner fee first, then the gibs fee.
+* There is no admin and no partner registry. The sender of each transfer writes the fee into the transfer data.
+* Rates are 1e18 fixed point: 1e18 is 100%, 1e16 is 1%.
+* The gibs fee rate can never be above `MAXIMUM_FEE_RATE_E18` (1e16, 1%).
+  The partner fee rate can never be above `MAXIMUM_PARTNER_RATE_E18` (1e16, 1%).
+  A partner rate above zero needs a partner account.
+* A fee is `amount * rate / 1e18`, rounded down.
 * The mediator list, `wNative`, `gibsCollector` and `rescueRecipient` are fixed at construction.
-* The admin can set the gibs rate and hand on the admin role. Nothing else.
-  The admin cannot move any token, and cannot touch the ledger, the collector, the rescue recipient, the mediators or any partner.
 * Anyone can call `rescueUnaccounted(token)`. It pays the unaccounted part of the balance to `rescueRecipient`.
 
 ### Home to foreign
 
-Call `relay(mediator, token, amount, receiver, data, partnerId, maximumTotalRate)` after you approve the token.
-For native PLS call `relayNative(mediator, receiver, data, partnerId, maximumTotalRate)` with a value.
+Call `relay(mediator, token, amount, receiver, data, terms)` after you approve the token.
+For native PLS call `relayNative(mediator, receiver, data, terms)` with a value.
+`terms` is `(feeRateE18, partner, partnerRateE18)`. A rate above its cap reverts with `InvalidFees`.
 The contract measures what it receives (fee-on-transfer tokens are safe), credits the fees,
 and calls `relayTokensAndCall(token, receiver, rest, data)` on the mediator.
 `data` is passed unchanged, so it can carry the `FeeDirector` of the existing routers.
@@ -74,12 +74,12 @@ The existing mediators keep their own fee as well (0.3% on the PulseChain mediat
 ### Foreign to home
 
 Send the tokens with `relayTokensAndCall` to the ledger address on the foreign chain.
-Set `data` to `abi.encode(address recipient, uint256 partnerId, uint16 maximumTotalRate, bool unwrap)` (128 bytes).
+Set `data` to `abi.encode(address recipient, bool unwrap, uint256 feeRateE18, address partner, uint256 partnerRateE18)` (160 bytes).
 The mediator transfers the tokens, then calls `onTokenBridged` and ignores a failure.
 So after its caller check, `onTokenBridged` never reverts:
 
 * It uses the smaller of `value` and the balance that is not owed to anyone.
-* Malformed data, a zero recipient or nothing available leaves the tokens outside the ledger (`Skipped` is emitted).
+* Malformed data, a rate above its cap, a zero recipient or nothing available leaves the tokens outside the ledger (`Skipped` is emitted).
   Anyone can send them to `rescueRecipient` with `rescueUnaccounted`.
 * If the payment to the recipient fails, the recipient is credited in the ledger.
   When `unwrap` fails, the recipient is credited WPLS, not PLS.
