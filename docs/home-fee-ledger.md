@@ -173,7 +173,7 @@ The mediator ignores a failed callback. If `onTokenBridged` reverted, the tokens
 
 The ledger never pays out more than it received. It uses the smaller of two numbers: the `value` that the mediator reports, and the balance that the ledger owes to nobody.
 
-Tokens left outside the ledger are not lost. The gibs admin can move them with `rescueUnaccounted`. See the admin section.
+Tokens left outside the ledger are not lost. Anyone can send them to the fixed `rescueRecipient` with `rescueUnaccounted(token)`. No key chooses the destination. See the admin section.
 
 "Never reverts" covers the contract's own logic. It cannot cover running out of gas. The callback runs inside the gas that the bridge message carries. If the callback runs out of gas, its changes are undone and the tokens stay outside the ledger. No `Skipped` event is emitted in that case.
 
@@ -213,7 +213,7 @@ The zero address as `token` means native PLS. No code path credits native PLS to
 | `GibsRateSet(uint16 rate)` | The gibs rate changes. |
 | `AdminTransferStarted(address indexed admin, address indexed pendingAdmin)` | An admin transfer starts. |
 | `AdminTransferred(address indexed previousAdmin, address indexed newAdmin)` | The admin role changes hands. The new admin is zero after a renounce. |
-| `Rescued(address indexed token, address indexed to, uint256 amount)` | The admin moves tokens that were outside the ledger. |
+| `Rescued(address indexed token, address indexed to, uint256 amount)` | Tokens that were outside the ledger go to `rescueRecipient`. `to` is always `rescueRecipient`. |
 | `MediatorAllowed(address indexed mediator)` | Once per mediator, at deployment. |
 
 Three details matter when you count your earnings:
@@ -231,29 +231,31 @@ The admin can do exactly these things:
 | Function | Power |
 |---|---|
 | `setGibsRate(uint16 rate)` | Sets the gibs rate, at most 100 basis points. |
-| `rescueUnaccounted(address token, address to)` | Moves the part of the ledger's balance that is not owed to anyone. It never touches `totalOwed`. |
 | `transferAdmin(address newAdmin)` | Names a new admin. The new admin must call `acceptAdmin()`. |
-| `renounceAdmin()` | Gives up the role for good. The gibs rate and the rescue function are then fixed. |
+| `renounceAdmin()` | Gives up the role for good. The gibs rate is then fixed. |
+
+Anyone, not only the admin, can call `rescueUnaccounted(address token)`. It sends the part of the ledger's balance that is not owed to anyone to `rescueRecipient`. The recipient is fixed in the constructor and no caller can choose another. The call never touches `totalOwed`.
 
 The admin cannot do any of these things:
 
+- move any token, or choose where any token goes;
 - change a partner's payout, rate or controller;
 - change or reduce any balance in the ledger;
 - withdraw your fees;
-- change `gibsCollector`, the wrapped token, or the mediator list;
+- change `gibsCollector`, `rescueRecipient`, the wrapped token, or the mediator list;
 - raise either rate ceiling;
 - pause or upgrade the contract.
 
-`gibsCollector`, `wNative` and the mediator list are fixed in the constructor. The contract has no setter for them, no pause and no upgrade path.
+`gibsCollector`, `rescueRecipient`, `wNative` and the mediator list are fixed in the constructor. The contract has no setter for them, no pause and no upgrade path.
 
 The admin can change the gibs rate between a quote and a transaction. `maximumTotalRate` protects the sender against this. On the inbound path, a higher gibs rate first cuts into your partner fee, because the cap cuts the partner fee first.
 
 ## Known limits and open items
 
 - **Not deployed and not audited.** No address exists. No deployment script exists in this repository yet. The first gibs rate is a constructor argument; the tests use 30 basis points, but no production value is decided.
-- **Token payout gas is not capped.** On the inbound path, the payment to the recipient gives the token contract all the remaining gas. A native PLS payment is capped at `NATIVE_PAYOUT_GAS`, 100,000 gas. A token that burns all the gas can make the callback run out of gas. Then the delivery stays outside the ledger until the admin rescues it.
+- **Token payout gas is not capped.** On the inbound path, the payment to the recipient gives the token contract all the remaining gas. A native PLS payment is capped at `NATIVE_PAYOUT_GAS`, 100,000 gas. A token that burns all the gas can make the callback run out of gas. Then the delivery stays outside the ledger until someone calls `rescueUnaccounted`.
 - **The deposit forwarder is not wired into the ledger.** The Ethereum deposit addresses send straight to the PulseChain recipient through the main mediator. They do not pass through the ledger, so they earn no partner fee. They charge their own fee on Ethereum instead.
 - **Inbound tests use a stand-in for the bridge.** The fork test calls `onTokenBridged` from the real mediator address, but no real bridge message carried it. The mediator code in `contracts/upgradeable_contracts/BasicOmnibridge.sol` (`_receiverCallback`) calls the receiver this way and ignores the result.
 - **The mediator reports the amount before its own fee.** The mediator passes the full `value` to the callback but may deliver less. The ledger handles this, because it uses the smaller of `value` and its free balance.
-- **No PLS balances.** Native PLS can only enter the ledger from WPLS during an unwrap. PLS forced in by other means is outside the ledger, and only the admin can move it.
-- **No refunds through the ledger.** A malformed inbound transfer is not sent back. The admin must rescue it and return it by hand.
+- **No PLS balances.** Native PLS can only enter the ledger from WPLS during an unwrap. PLS forced in by other means is outside the ledger, and `rescueUnaccounted` sends it to `rescueRecipient`.
+- **No refunds through the ledger.** A malformed inbound transfer is not sent back. Anyone can rescue it to `rescueRecipient`, and the owner of that account returns it by hand.

@@ -76,7 +76,7 @@ describe('HomeFeeLedger on a PulseChain fork', function () {
         ;[, user, collector, recipient, partnerPayout] = signers
         usdc = new ethers.Contract(USDC, tokenAbi, user)
         const factory = await hre.ethers.getContractFactory('HomeFeeLedger')
-        ledger = await factory.deploy([MAIN_MEDIATOR, WPLS_MEDIATOR], WPLS, collector, signers[0], 30)
+        ledger = await factory.deploy([MAIN_MEDIATOR, WPLS_MEDIATOR], WPLS, collector, signers[7], signers[0], 30)
     })
 
     after(async () => {

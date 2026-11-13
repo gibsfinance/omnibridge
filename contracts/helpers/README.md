@@ -57,9 +57,10 @@ A fee is a gibs fee plus an optional partner fee. The partner fee is added to th
 * A partner rate can never be above `MAXIMUM_PARTNER_RATE` (100 basis points).
 * The caller of a transfer states `maximumTotalRate`. Outbound transfers revert above it.
   Inbound transfers charge only up to it, and cut the partner fee first, then the gibs fee.
-* The mediator list, `wNative` and `gibsCollector` are fixed at construction.
-* The admin can set the gibs rate and rescue unaccounted tokens. Nothing else.
-  The admin cannot touch the ledger, the collector, the mediators or any partner.
+* The mediator list, `wNative`, `gibsCollector` and `rescueRecipient` are fixed at construction.
+* The admin can set the gibs rate and hand on the admin role. Nothing else.
+  The admin cannot move any token, and cannot touch the ledger, the collector, the rescue recipient, the mediators or any partner.
+* Anyone can call `rescueUnaccounted(token)`. It pays the unaccounted part of the balance to `rescueRecipient`.
 
 ### Home to foreign
 
@@ -79,7 +80,7 @@ So after its caller check, `onTokenBridged` never reverts:
 
 * It uses the smaller of `value` and the balance that is not owed to anyone.
 * Malformed data, a zero recipient or nothing available leaves the tokens outside the ledger (`Skipped` is emitted).
-  The admin can move them with `rescueUnaccounted`.
+  Anyone can send them to `rescueRecipient` with `rescueUnaccounted`.
 * If the payment to the recipient fails, the recipient is credited in the ledger.
   When `unwrap` fails, the recipient is credited WPLS, not PLS.
 

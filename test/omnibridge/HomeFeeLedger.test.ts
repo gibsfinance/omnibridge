@@ -20,6 +20,7 @@ describe('HomeFeeLedger', () => {
     let user!: HardhatEthersSigner
     let recipient!: HardhatEthersSigner
     let stranger!: HardhatEthersSigner
+    let vault!: HardhatEthersSigner
     let mediator: any
     let otherMediator: any
     let ledger: any
@@ -27,13 +28,13 @@ describe('HomeFeeLedger', () => {
     let wNative: any
 
     const deploy = async () => {
-        ;[owner, collector, controller, payout, user, recipient, stranger] = await hre.ethers.getSigners()
+        ;[owner, collector, controller, payout, user, recipient, stranger, vault] = await hre.ethers.getSigners()
         mediator = await (await hre.ethers.getContractFactory('MockHomeMediator')).deploy()
         otherMediator = await (await hre.ethers.getContractFactory('MockHomeMediator')).deploy()
         wNative = await (await hre.ethers.getContractFactory('WETH')).deploy()
         token = await (await hre.ethers.getContractFactory('MockLedgerToken')).deploy()
         ledger = await (await hre.ethers.getContractFactory('HomeFeeLedger')).deploy(
-            [mediator, otherMediator], wNative, collector, owner, 30,
+            [mediator, otherMediator], wNative, collector, vault, owner, 30,
         )
     }
 
@@ -59,16 +60,18 @@ describe('HomeFeeLedger', () => {
             expect(await ledger.isMediator(otherMediator)).to.equal(true)
             expect(await ledger.isMediator(stranger)).to.equal(false)
             expect(await ledger.gibsCollector()).to.equal(collector.address)
+            expect(await ledger.rescueRecipient()).to.equal(vault.address)
             expect(await ledger.gibsRate()).to.equal(30)
         })
         it('rejects bad arguments', async () => {
             const factory = await hre.ethers.getContractFactory('HomeFeeLedger')
-            await expect(factory.deploy([], wNative, collector, owner, 0)).to.be.revertedWithCustomError(ledger, 'NoMediators')
-            await expect(factory.deploy([ZERO], wNative, collector, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
-            await expect(factory.deploy([mediator], ZERO, collector, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
-            await expect(factory.deploy([mediator], wNative, ZERO, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
-            await expect(factory.deploy([mediator], wNative, collector, ZERO, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
-            await expect(factory.deploy([mediator], wNative, collector, owner, 101)).to.be.revertedWithCustomError(ledger, 'RateTooHigh')
+            await expect(factory.deploy([], wNative, collector, vault, owner, 0)).to.be.revertedWithCustomError(ledger, 'NoMediators')
+            await expect(factory.deploy([ZERO], wNative, collector, vault, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
+            await expect(factory.deploy([mediator], ZERO, collector, vault, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
+            await expect(factory.deploy([mediator], wNative, ZERO, vault, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
+            await expect(factory.deploy([mediator], wNative, collector, ZERO, owner, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
+            await expect(factory.deploy([mediator], wNative, collector, vault, ZERO, 0)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
+            await expect(factory.deploy([mediator], wNative, collector, vault, owner, 101)).to.be.revertedWithCustomError(ledger, 'RateTooHigh')
         })
     })
 
@@ -94,7 +97,8 @@ describe('HomeFeeLedger', () => {
             await ledger.renounceAdmin()
             expect(await ledger.admin()).to.equal(ZERO)
             await expect(ledger.setGibsRate(1)).to.be.revertedWithCustomError(ledger, 'NotAdmin')
-            await expect(ledger.rescueUnaccounted(token, owner)).to.be.revertedWithCustomError(ledger, 'NotAdmin')
+            await token.mint(ledger, 5n)
+            await expect(ledger.rescueUnaccounted(token)).to.changeTokenBalances(token, [ledger, vault], [-5n, 5n])
         })
     })
 
@@ -217,8 +221,8 @@ describe('HomeFeeLedger', () => {
                 .withArgs(mediator, token, amount, SkipReason.ZeroRecipient)
             expect(await ledger.totalOwed(token)).to.equal(0n)
             expect(await ledgerBalance()).to.equal(amount)
-            await ledger.rescueUnaccounted(token, stranger)
-            expect(await token.balanceOf(stranger)).to.equal(amount)
+            await ledger.rescueUnaccounted(token)
+            expect(await token.balanceOf(vault)).to.equal(amount)
         })
         it('uses the available amount when the delivery is short', async () => {
             await deliver(instruction(recipient.address), amount / 2n, amount)
@@ -286,7 +290,7 @@ describe('HomeFeeLedger', () => {
         it('skips instead of reverting on a reentrant delivery', async () => {
             const reentrant = await (await hre.ethers.getContractFactory('MockReentrantMediator')).deploy()
             const guarded = await (await hre.ethers.getContractFactory('HomeFeeLedger')).deploy(
-                [mediator, reentrant], wNative, collector, owner, 30,
+                [mediator, reentrant], wNative, collector, vault, owner, 30,
             )
             await reentrant.setTarget(guarded)
             await wNative.deposit({ value: amount })
@@ -326,24 +330,56 @@ describe('HomeFeeLedger', () => {
         })
         it('rescues only what is not owed', async () => {
             await deliver(instruction(recipient.address))
-            await expect(ledger.rescueUnaccounted(token, owner)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
+            await expect(ledger.rescueUnaccounted(token)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
             await token.mint(ledger, 777n)
-            await expect(ledger.connect(stranger).rescueUnaccounted(token, stranger)).to.be.revertedWithCustomError(ledger, 'NotAdmin')
-            await expect(ledger.rescueUnaccounted(token, ZERO)).to.be.revertedWithCustomError(ledger, 'ZeroAddress')
-            await ledger.rescueUnaccounted(token, owner)
-            expect(await token.balanceOf(owner)).to.equal(777n)
+            await ledger.rescueUnaccounted(token)
+            expect(await token.balanceOf(vault)).to.equal(777n)
             expect(await ledgerBalance()).to.equal(3_000n)
             expect(await ledger.owed(token, collector)).to.equal(3_000n)
+            expect(await ledger.totalOwed(token)).to.equal(3_000n)
+            await expect(ledger.rescueUnaccounted(token)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
             await ledger.connect(collector).withdraw(token)
             expect(await token.balanceOf(collector)).to.equal(3_000n)
+        })
+        it('pays the fixed rescue recipient whoever calls, and nobody else', async () => {
+            await token.mint(ledger, 500n)
+            const callers = [stranger, owner, collector]
+            for (const caller of callers) {
+                await token.mint(ledger, 100n)
+                const before = await Promise.all([caller, recipient, owner, stranger, collector].map((who) => token.balanceOf(who)))
+                await expect(ledger.connect(caller).rescueUnaccounted(token))
+                    .to.emit(ledger, 'Rescued').withArgs(token, vault.address, caller === stranger ? 600n : 100n)
+                const after = await Promise.all([caller, recipient, owner, stranger, collector].map((who) => token.balanceOf(who)))
+                expect(after).to.deep.equal(before)
+            }
+            expect(await token.balanceOf(vault)).to.equal(800n)
+            expect(await ledgerBalance()).to.equal(0n)
+        })
+        it('has no rescue form that takes a destination', async () => {
+            const rescues = ledger.interface.fragments.filter((fragment: any) => fragment.name === 'rescueUnaccounted')
+            expect(rescues.length).to.equal(1)
+            expect(rescues[0].inputs.map((input: any) => input.type)).to.deep.equal(['address'])
+            expect(rescues[0].inputs[0].name).to.equal('token')
+        })
+        it('cannot rescue credited fees, even after a partial delivery', async () => {
+            const id = await registerPartner(50)
+            await deliver(instruction(recipient.address, id))
+            await deliver(instruction(recipient.address), amount / 2n, amount)
+            const owedBefore = await ledger.totalOwed(token)
+            expect(owedBefore).to.equal(8_000n + 1_500n)
+            await expect(ledger.rescueUnaccounted(token)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
+            await token.mint(ledger, 1n)
+            await expect(ledger.rescueUnaccounted(token)).to.emit(ledger, 'Rescued').withArgs(token, vault.address, 1n)
+            expect(await ledger.totalOwed(token)).to.equal(owedBefore)
+            expect(await ledgerBalance()).to.equal(owedBefore)
         })
         it('refuses native coin from anyone but the wrapped token', async () => {
             await expect(stranger.sendTransaction({ to: ledger, value: 1n })).to.be.revertedWithCustomError(ledger, 'SenderNotWrappedNative')
         })
         it('rescues native coin that arrived by force, and nothing else', async () => {
             await hre.network.provider.send('hardhat_setBalance', [await ledger.getAddress(), '0x64'])
-            await expect(ledger.rescueUnaccounted(ZERO, stranger)).to.changeEtherBalances([ledger, stranger], [-100n, 100n])
-            await expect(ledger.rescueUnaccounted(ZERO, stranger)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
+            await expect(ledger.rescueUnaccounted(ZERO)).to.changeEtherBalances([ledger, vault], [-100n, 100n])
+            await expect(ledger.rescueUnaccounted(ZERO)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
         })
         it('withdraws a native entry with a call', async () => {
             // no code path credits native coin today, so plant owed (slot 6) and totalOwed (slot 7) entries

@@ -65,10 +65,12 @@ library InboundInstruction {
  * Outbound (home to foreign): `relay` and `relayNative` take the fee, then call a mediator. They may revert.
  * Inbound (foreign to home): a mediator delivers tokens to this contract and calls `onTokenBridged`.
  * The mediator ignores a failed callback, so after the caller check that function never reverts.
- * Anything it cannot place stays outside `totalOwed`, and the admin can rescue it with `rescueUnaccounted`.
+ * Anything it cannot place stays outside `totalOwed`. Anyone can send it to `rescueRecipient` with
+ * `rescueUnaccounted`. The recipient is fixed at construction, so no key chooses where rescued tokens go.
  *
- * The admin sets the gibs rate (below a fixed ceiling) and can rescue unaccounted tokens.
- * The admin cannot touch the ledger, the collector, the mediator list, or any partner.
+ * The admin only sets the gibs rate (below a fixed ceiling) and hands the admin role on.
+ * The admin cannot move any token, and cannot touch the ledger, the collector, the rescue recipient,
+ * the mediator list, or any partner.
  */
 contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     using SafeERC20 for IERC20;
@@ -118,6 +120,9 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     IWNative public immutable wNative;
     /// @notice The account credited with every gibs fee. It cannot change.
     address public immutable gibsCollector;
+    /// @notice The only account that `rescueUnaccounted` pays. It cannot change.
+    /// It is separate from `gibsCollector`, so rescued tokens never mix with fee accounting.
+    address public immutable rescueRecipient;
 
     /// @notice The account that sets the gibs rate. Zero after `renounceAdmin`.
     address public admin;
@@ -174,7 +179,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     event Credited(address indexed token, address indexed account, uint256 amount, CreditReason reason);
     /// @notice Emitted when an account withdraws from the ledger.
     event Withdrawn(address indexed token, address indexed account, address indexed to, uint256 amount);
-    /// @notice Emitted when the admin rescues unaccounted funds.
+    /// @notice Emitted when unaccounted funds are sent to `rescueRecipient`. `to` is always `rescueRecipient`.
     event Rescued(address indexed token, address indexed to, uint256 amount);
     /// @notice Emitted when an outbound transfer is handed to a mediator.
     event Relayed(
@@ -200,10 +205,12 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     event Skipped(address indexed mediator, address indexed token, uint256 value, SkipReason reason);
 
     /**
-     * @dev Fixes the mediators, the wrapped native token and the collector. Sets the first rate and admin.
+     * @dev Fixes the mediators, the wrapped native token, the collector and the rescue recipient.
+     * Sets the first rate and admin.
      * @param mediators the home mediators that may deliver tokens and receive relays. At least one.
      * @param _wNative the wrapped native token (WPLS).
      * @param _gibsCollector the account credited with gibs fees. It cannot change.
+     * @param _rescueRecipient the only account that receives rescued tokens. It cannot change.
      * @param _admin the first admin.
      * @param initialGibsRate the first gibs rate in basis points, at most MAXIMUM_GIBS_RATE.
      */
@@ -211,11 +218,15 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         address[] memory mediators,
         IWNative _wNative,
         address _gibsCollector,
+        address _rescueRecipient,
         address _admin,
         uint16 initialGibsRate
     ) {
         if (mediators.length == 0) revert NoMediators();
-        if (address(_wNative) == address(0) || _gibsCollector == address(0) || _admin == address(0)) {
+        if (
+            address(_wNative) == address(0) || _gibsCollector == address(0) || _rescueRecipient == address(0)
+                || _admin == address(0)
+        ) {
             revert ZeroAddress();
         }
         if (initialGibsRate > MAXIMUM_GIBS_RATE) revert RateTooHigh();
@@ -227,6 +238,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         }
         wNative = _wNative;
         gibsCollector = _gibsCollector;
+        rescueRecipient = _rescueRecipient;
         admin = _admin;
         gibsRate = initialGibsRate;
         reentrant = _NOT_ENTERED;
@@ -284,7 +296,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     }
 
     /**
-     * @notice Gives up the admin role for good. The gibs rate and the rescue function then stay fixed.
+     * @notice Gives up the admin role for good. The gibs rate then stays fixed.
      */
     function renounceAdmin() external onlyAdmin {
         emit AdminTransferred(msg.sender, address(0));
@@ -293,19 +305,19 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     }
 
     /**
-     * @notice Moves tokens that are not in the ledger. It never touches `totalOwed`.
-     * Moves the whole difference between the balance and `totalOwed[token]`.
+     * @notice Sends tokens that are not in the ledger to `rescueRecipient`. It never touches `totalOwed`.
+     * Sends the whole difference between the balance and `totalOwed[token]`.
+     * Anyone can call it. The destination is fixed, so a caller gains nothing by calling it,
+     * and the only effect of an early call is that the tokens arrive sooner.
      * @param token the token to rescue, or the zero address for native coin.
-     * @param to the receiver. Not the zero address.
      */
-    function rescueUnaccounted(address token, address to) external onlyAdmin nonReentrant {
-        if (to == address(0)) revert ZeroAddress();
+    function rescueUnaccounted(address token) external nonReentrant {
         uint256 balance = _balance(token);
         uint256 accounted = totalOwed[token];
         if (balance <= accounted) revert NothingToPay();
         uint256 amount = balance - accounted;
-        emit Rescued(token, to, amount);
-        _send(token, to, amount);
+        emit Rescued(token, rescueRecipient, amount);
+        _send(token, rescueRecipient, amount);
     }
 
     // ------------------------------------------------------------- partners
