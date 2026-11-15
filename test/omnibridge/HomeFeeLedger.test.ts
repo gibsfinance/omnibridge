@@ -51,9 +51,9 @@ describe('HomeFeeLedger', () => {
 
     describe('construction', () => {
         it('fixes constants, mediators, collector and rescue recipient', async () => {
-            expect(await ledger.MAXIMUM_FEE_RATE_E18()).to.equal(10n ** 16n)
-            expect(await ledger.MAXIMUM_PARTNER_RATE_E18()).to.equal(10n ** 16n)
             expect(await ledger.RATE_BASE_E18()).to.equal(10n ** 18n)
+            expect(ledger.interface.hasFunction('MAXIMUM_FEE_RATE_E18')).to.equal(false)
+            expect(ledger.interface.hasFunction('MAXIMUM_PARTNER_RATE_E18')).to.equal(false)
             expect(await ledger.isMediator(mediator)).to.equal(true)
             expect(await ledger.isMediator(otherMediator)).to.equal(true)
             expect(await ledger.isMediator(stranger)).to.equal(false)
@@ -107,14 +107,46 @@ describe('HomeFeeLedger', () => {
             expect(await ledger.owed(token, payout)).to.equal(10_000n)
             expect(await token.balanceOf(recipient)).to.equal(amount - 20_000n)
         })
-        it('accepts the cap exactly and refuses one unit above it', async () => {
-            await deliver(instruction(recipient.address, { feeRate: 10n ** 16n }))
-            expect(await ledger.owed(token, collector)).to.equal(10_000n)
-            await expect(deliver(instruction(recipient.address, { feeRate: 10n ** 16n + 1n }))).to.emit(ledger, 'Skipped')
-                .withArgs(mediator, token, amount, SkipReason.MalformedData)
-            await expect(deliver(instruction(recipient.address, { feeRate: ethers.MaxUint256 }))).to.emit(ledger, 'Skipped')
-                .withArgs(mediator, token, amount, SkipReason.MalformedData)
+        it('accepts a fee above one percent, with no cap', async () => {
+            await deliver(instruction(recipient.address, { feeRate: rate(50) }))
+            expect(await ledger.owed(token, collector)).to.equal(500_000n)
+            expect(await token.balanceOf(recipient)).to.equal(500_000n)
             expect(await mediator.lastCallbackSucceeded()).to.equal(true)
+        })
+        it('pays the recipient nothing and credits everything at a fee of 100 percent', async () => {
+            await expect(deliver(instruction(recipient.address, { feeRate: rate(100) })))
+                .to.emit(ledger, 'Delivered').withArgs(mediator, token, recipient.address, amount, amount, 0n, ZERO)
+            expect(await ledger.owed(token, collector)).to.equal(amount)
+            expect(await token.balanceOf(recipient)).to.equal(0n)
+            expect(await ledgerBalance()).to.equal(amount)
+            expect(await ledger.totalOwed(token)).to.equal(amount)
+            expect(await mediator.lastCallbackSucceeded()).to.equal(true)
+        })
+        it('accepts a fee and partner that add up to exactly one hundred percent', async () => {
+            await deliver(instruction(recipient.address, withPartner(rate(60), rate(40))))
+            expect(await ledger.owed(token, collector)).to.equal(600_000n)
+            expect(await ledger.owed(token, payout)).to.equal(400_000n)
+            expect(await token.balanceOf(recipient)).to.equal(0n)
+            expect(await ledger.totalOwed(token)).to.equal(amount)
+            expect(await mediator.lastCallbackSucceeded()).to.equal(true)
+        })
+        it('skips a fee and partner that add up to more than one hundred percent, without overflow', async () => {
+            // the last case wraps to zero in a 256 bit sum, so a sum that is not checked carefully would pass it
+            const overTotal = [
+                withPartner(rate(60), 4n * 10n ** 17n + 1n),
+                withPartner(rate(60), rate(40.01)),
+                withPartner(ethers.MaxUint256, 1n),
+                withPartner(ethers.MaxUint256 - 1n, 2n),
+                { feeRate: ethers.MaxUint256, partner: ZERO, partnerRate: 0n },
+            ]
+            for (const bad of overTotal) {
+                await expect(deliver(instruction(recipient.address, bad))).to.emit(ledger, 'Skipped')
+                    .withArgs(mediator, token, amount, SkipReason.MalformedData)
+                expect(await mediator.lastCallbackSucceeded()).to.equal(true)
+            }
+            expect(await ledger.totalOwed(token)).to.equal(0n)
+            expect(await ledgerBalance()).to.equal(amount * BigInt(overTotal.length))
+            expect(await token.balanceOf(recipient)).to.equal(0n)
         })
         it('does not overflow for a huge delivery', async () => {
             const huge = 2n ** 250n
@@ -150,17 +182,17 @@ describe('HomeFeeLedger', () => {
             await deliver(instruction(recipient.address), amount, amount, otherMediator)
             expect(await token.balanceOf(recipient)).to.equal(amount - 3_000n)
         })
-        it('leaves tokens unaccounted for a rate above its cap', async () => {
-            for (const bad of [
-                instruction(recipient.address, { feeRate: rate(1.01) }),
-                instruction(recipient.address, { feeRate: rate(100) }),
-                instruction(recipient.address, withPartner(rate(0.3), rate(1.01))),
-            ]) {
+        it('leaves tokens unaccounted for a fee that is 100 percent or more with a partner on top', async () => {
+            const overTotal = [
+                instruction(recipient.address, withPartner(rate(100), rate(0.01))),
+                instruction(recipient.address, withPartner(rate(0.3), rate(100))),
+            ]
+            for (const bad of overTotal) {
                 await expect(deliver(bad)).to.emit(ledger, 'Skipped').withArgs(mediator, token, amount, SkipReason.MalformedData)
                 expect(await mediator.lastCallbackSucceeded()).to.equal(true)
             }
             expect(await ledger.totalOwed(token)).to.equal(0n)
-            expect(await ledgerBalance()).to.equal(amount * 3n)
+            expect(await ledgerBalance()).to.equal(amount * BigInt(overTotal.length))
             expect(await token.balanceOf(recipient)).to.equal(0n)
         })
         it('leaves tokens unaccounted for a partner rate with no partner', async () => {
@@ -418,11 +450,34 @@ describe('HomeFeeLedger', () => {
             expect(await ledger.owed(token, collector)).to.equal(2_970n)
             expect(await ledger.totalOwed(token)).to.equal(2_970n)
         })
-        it('reverts for a rate above its cap or a partner rate with no partner', async () => {
-            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(1.01))))
+        it('takes a fee of 99 percent and bridges the last percent', async () => {
+            await ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(60), rate(39), payout.address))
+            expect(await token.balanceOf(mediator)).to.equal(10_000n)
+            expect(await ledger.owed(token, collector)).to.equal(600_000n)
+            expect(await ledger.owed(token, payout)).to.equal(390_000n)
+        })
+        it('treats a fee and partner of exactly one hundred percent as valid, so nothing is left to bridge', async () => {
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(60), rate(40), payout.address)))
+                .to.be.revertedWithCustomError(ledger, 'NothingReceived')
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(100))))
+                .to.be.revertedWithCustomError(ledger, 'NothingReceived')
+        })
+        it('reverts InvalidFees when fee and partner add up to more than one hundred percent', async () => {
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(60), 4n * 10n ** 17n + 1n, payout.address)))
                 .to.be.revertedWithCustomError(ledger, 'InvalidFees')
-            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(0.3), rate(1.01), payout.address)))
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(100), rate(0.01), payout.address)))
                 .to.be.revertedWithCustomError(ledger, 'InvalidFees')
+        })
+        it('reverts InvalidFees for a fee near the top of uint256, without overflowing the sum', async () => {
+            // the last case wraps to zero in a 256 bit sum, so a sum that is not checked carefully would pass it
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(ethers.MaxUint256, 1n, payout.address)))
+                .to.be.revertedWithCustomError(ledger, 'InvalidFees')
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(ethers.MaxUint256 - 1n, 2n, payout.address)))
+                .to.be.revertedWithCustomError(ledger, 'InvalidFees')
+            await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(ethers.MaxUint256)))
+                .to.be.revertedWithCustomError(ledger, 'InvalidFees')
+        })
+        it('reverts InvalidFees for a partner rate with no partner', async () => {
             await expect(ledger.connect(user).relay(mediator, token, amount, toForeign, '0x', terms(rate(0.3), rate(0.01))))
                 .to.be.revertedWithCustomError(ledger, 'InvalidFees')
         })

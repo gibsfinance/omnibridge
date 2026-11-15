@@ -26,18 +26,18 @@ The contract is unaudited and has no deployed address yet.
 | Rate | A share written as 1e18 fixed point. 1e18 is 100 percent. 1e16 is 1 percent. 5e15 is 0.5 percent. 2.5e15 is 0.25 percent. |
 | Ledger | The `owed` table. It records what each account can withdraw, per token. |
 
-## Fee rules and caps
+## Fee rules and limits
 
 A fee is `amount * rate / 1e18`, rounded down. The gibs fee and the partner fee are each rounded down on their own, so the rounding dust goes to the recipient.
 
-| Rate | Who writes it | Cap |
+| Rate | Who writes it | Limit |
 |---|---|---|
-| `feeRateE18` (gibs fee) | The sender of the transfer | `MAXIMUM_FEE_RATE_E18`, 1e16 (1 percent) |
-| `partnerRateE18` | The sender of the transfer | `MAXIMUM_PARTNER_RATE_E18`, 1e16 (1 percent) |
+| `feeRateE18` (gibs fee) | The sender of the transfer | Taken as written |
+| `partnerRateE18` | The sender of the transfer | Taken as written |
 
-Both caps are constants. So the total can never pass 2e16 (2 percent). A partner rate above zero needs a non-zero `partner`.
+The only limit is on the sum. `feeRateE18 + partnerRateE18` must be at most 1e18 (100 percent), because the fees cannot be larger than what arrived. A partner rate above zero needs a non-zero `partner`.
 
-The multiplication uses `Math.mulDiv`, which is exact for any 256 bit input. A rate is at most 1e16, which is below 1e18, so the result always fits.
+The multiplication uses `Math.mulDiv`, which is exact for any 256 bit input. Each rate is at most 1e18 and the two fees together are at most the amount, so the result always fits.
 
 The bridge mediators keep their own fee as well. That fee is separate from the ledger. On the PulseChain fork that the tests use (block 27,540,000), the main mediator and the WPLS bridge mediator kept 0.3 percent on a home to foreign transfer.
 
@@ -74,7 +74,7 @@ The ledger then does this, in order:
 
 1. It checks that `mediator` is on the allowed list. If not, it reverts with `NotMediator`.
 2. It pulls the tokens and measures what arrived. A token that charges a fee on transfer is safe, because the ledger counts only what it received.
-3. It checks the terms. A rate above its cap, or a partner rate with no partner, reverts with `InvalidFees`.
+3. It checks the terms. Fees that add up to more than 100 percent, or a partner rate with no partner, revert with `InvalidFees`.
 4. It credits the gibs fee to `gibsCollector` and the partner fee to `partner`.
 5. It calls `relayTokensAndCall(token, receiver, rest, data)` on the mediator. It passes `data` unchanged and never reads it.
 6. It emits `Relayed`.
@@ -106,7 +106,7 @@ The mediator ignores a failed callback. If `onTokenBridged` reverted, the tokens
 | Problem | What happens | Event |
 |---|---|---|
 | `data` is not exactly 160 bytes, or an address or bool word holds bits that its type cannot hold | Nothing is paid. The tokens stay outside the ledger. | `Skipped` with reason `MalformedData` |
-| A rate is above its cap, or the partner rate is above zero with no partner | Same as above. | `Skipped` with reason `MalformedData` |
+| The fees add up to more than 100 percent, or the partner rate is above zero with no partner | Same as above. | `Skipped` with reason `MalformedData` |
 | The recipient is the zero address | Same as above. | `Skipped` with reason `ZeroRecipient` |
 | No free balance is available | Same as above. | `Skipped` with reason `NothingAvailable` |
 | A second delivery starts while one is running | Same as above. | `Skipped` with reason `Reentrant` |

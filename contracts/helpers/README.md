@@ -54,8 +54,9 @@ A fee is a gibs fee plus an optional partner fee. The partner fee is added to th
 
 * There is no admin and no partner registry. The sender of each transfer writes the fee into the transfer data.
 * Rates are 1e18 fixed point: 1e18 is 100%, 1e16 is 1%.
-* The gibs fee rate can never be above `MAXIMUM_FEE_RATE_E18` (1e16, 1%).
-  The partner fee rate can never be above `MAXIMUM_PARTNER_RATE_E18` (1e16, 1%).
+* The rates are taken as written. There is no cap on either rate.
+  The only limit is that the gibs fee rate and the partner fee rate add up to at most 1e18 (100%),
+  because the fees cannot be larger than what arrived.
   A partner rate above zero needs a partner account.
 * A fee is `amount * rate / 1e18`, rounded down.
 * The mediator list, `wNative`, `gibsCollector` and `rescueRecipient` are fixed at construction.
@@ -65,7 +66,7 @@ A fee is a gibs fee plus an optional partner fee. The partner fee is added to th
 
 Call `relay(mediator, token, amount, receiver, data, terms)` after you approve the token.
 For native PLS call `relayNative(mediator, receiver, data, terms)` with a value.
-`terms` is `(feeRateE18, partner, partnerRateE18)`. A rate above its cap reverts with `InvalidFees`.
+`terms` is `(feeRateE18, partner, partnerRateE18)`. Fees that add up to more than 100% revert with `InvalidFees`, and so does a partner rate with no partner.
 The contract measures what it receives (fee-on-transfer tokens are safe), credits the fees,
 and calls `relayTokensAndCall(token, receiver, rest, data)` on the mediator.
 `data` is passed unchanged, so it can carry the `FeeDirector` of the existing routers.
@@ -79,7 +80,7 @@ The mediator transfers the tokens, then calls `onTokenBridged` and ignores a fai
 So after its caller check, `onTokenBridged` never reverts:
 
 * It uses the smaller of `value` and the balance that is not owed to anyone.
-* Malformed data, a rate above its cap, a zero recipient or nothing available leaves the tokens outside the ledger (`Skipped` is emitted).
+* Malformed data, fees that add up to more than 100%, a partner rate with no partner, a zero recipient or nothing available leaves the tokens outside the ledger (`Skipped` is emitted).
   Anyone can send them to `rescueRecipient` with `rescueUnaccounted`.
 * If the payment to the recipient fails, the recipient is credited in the ledger.
   When `unwrap` fails, the recipient is credited WPLS, not PLS.

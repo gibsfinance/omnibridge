@@ -12,10 +12,6 @@ import {IWETH as IWNative} from "../interfaces/IWETH.sol";
 
 /// @dev The base of every rate: 1e18 is 100 percent.
 uint256 constant RATE_BASE = 1e18;
-/// @dev The highest gibs fee, 1e16 (1 percent). No data can ask for more.
-uint256 constant MAXIMUM_FEE_RATE = 1e16;
-/// @dev The highest partner fee, 1e16 (1 percent). No data can ask for more.
-uint256 constant MAXIMUM_PARTNER_RATE = 1e16;
 
 /**
  * @title InboundInstruction
@@ -32,9 +28,9 @@ library InboundInstruction {
      * @dev Result of reading an instruction.
      * @param recipient the account that receives the tokens after fees.
      * @param unwrap true to pay the wrapped native token out as native coin.
-     * @param feeRateE18 the gibs fee (1e18 is 100 percent), at most MAXIMUM_FEE_RATE.
+     * @param feeRateE18 the gibs fee (1e18 is 100 percent).
      * @param partner the account that earns the partner fee, or zero for none.
-     * @param partnerRateE18 the partner fee (1e18 is 100 percent), at most MAXIMUM_PARTNER_RATE.
+     * @param partnerRateE18 the partner fee (1e18 is 100 percent). The two rates add up to at most 1e18.
      * It is zero when `partner` is the zero address.
      */
     struct Instruction {
@@ -46,7 +42,9 @@ library InboundInstruction {
     }
 
     /**
-     * @dev True when the three fee fields obey the caps, and no partner fee is charged without a partner.
+     * @dev True when no partner fee is charged without a partner, and the two fees add up to at most 1e18
+     * (100 percent), so they never take more than arrived. Each rate is checked against 1e18 before the
+     * sum is compared, so the check cannot overflow.
      * @param feeRateE18 the gibs fee (1e18 is 100 percent).
      * @param partner the partner account, or zero.
      * @param partnerRateE18 the partner fee (1e18 is 100 percent).
@@ -56,9 +54,9 @@ library InboundInstruction {
         pure
         returns (bool)
     {
-        if (feeRateE18 > MAXIMUM_FEE_RATE) return false;
-        if (partnerRateE18 > MAXIMUM_PARTNER_RATE) return false;
-        return partner != address(0) || partnerRateE18 == 0;
+        if (partner == address(0) && partnerRateE18 != 0) return false;
+        if (feeRateE18 > RATE_BASE) return false;
+        return partnerRateE18 <= RATE_BASE - feeRateE18;
     }
 
     /**
@@ -94,8 +92,9 @@ library InboundInstruction {
  * Fees are never sent out when they are earned. They are credited, and each owner withdraws.
  *
  * There is no admin. Nothing here can be set after construction. The fee is not stored in this contract:
- * the sender of each transfer writes the fee rates into the transfer data, inside the hard caps
- * MAXIMUM_FEE_RATE and MAXIMUM_PARTNER_RATE (1e16 each, so 2e16 in total).
+ * the sender of each transfer writes the fee rates into the transfer data. The rates are taken as written.
+ * The only limit is that the gibs fee and the partner fee add up to at most 100 percent (1e18),
+ * because the fees cannot be larger than what arrived.
  * A sender can only write the fee for its own tokens, because the data travels with that transfer only.
  *
  * Outbound (home to foreign): `relay` and `relayNative` take the fee the caller names, then call a mediator.
@@ -110,10 +109,6 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
 
     /// @notice The base for every rate. 1e18 is 100 percent.
     uint256 public constant RATE_BASE_E18 = RATE_BASE;
-    /// @notice The highest gibs fee rate, 1e16 (1 percent). Nothing can raise it.
-    uint256 public constant MAXIMUM_FEE_RATE_E18 = MAXIMUM_FEE_RATE;
-    /// @notice The highest partner fee rate, 1e16 (1 percent). Nothing can raise it.
-    uint256 public constant MAXIMUM_PARTNER_RATE_E18 = MAXIMUM_PARTNER_RATE;
     /// @notice The gas given to a native coin payout to an inbound recipient.
     uint256 public constant NATIVE_PAYOUT_GAS = 100_000;
 
@@ -122,9 +117,9 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
 
     /**
      * @dev The fee a caller of `relay` or `relayNative` agrees to.
-     * @param feeRateE18 the gibs fee (1e18 is 100 percent), at most MAXIMUM_FEE_RATE.
+     * @param feeRateE18 the gibs fee (1e18 is 100 percent).
      * @param partner the account credited with the partner fee, or zero for none.
-     * @param partnerRateE18 the partner fee (1e18 is 100 percent), at most MAXIMUM_PARTNER_RATE.
+     * @param partnerRateE18 the partner fee (1e18 is 100 percent). The two rates add up to at most 1e18.
      */
     struct FeeTerms {
         uint256 feeRateE18;
@@ -280,7 +275,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
      * @param amount the amount to pull from the caller, before fees.
      * @param receiver the receiver on the foreign chain.
      * @param data passed to the mediator unchanged. It is not read here.
-     * @param terms the fee the caller pays. Rates above the caps, or a partner rate with no partner, revert.
+     * @param terms the fee the caller pays. Fees that add up to more than 100 percent, or a partner rate with no partner, revert.
      */
     function relay(
         address mediator,
@@ -303,7 +298,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
      * @param mediator an allowed home mediator.
      * @param receiver the receiver on the foreign chain.
      * @param data passed to the mediator unchanged. It is not read here.
-     * @param terms the fee the caller pays. Rates above the caps, or a partner rate with no partner, revert.
+     * @param terms the fee the caller pays. Fees that add up to more than 100 percent, or a partner rate with no partner, revert.
      */
     function relayNative(address mediator, address receiver, bytes calldata data, FeeTerms calldata terms)
         external
@@ -323,7 +318,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
      *
      * Order of work: read the balance that is not owed to anyone, take `available` as the smaller of that and `value`,
      * read the instruction, then split `available`.
-     * If the instruction is malformed (this includes a rate above its cap, or a partner rate with no partner),
+     * If the instruction is malformed (this includes fees that add up to more than 100 percent, or a partner rate with no partner),
      * the recipient is zero, or nothing is available, the tokens stay outside `totalOwed` and `Skipped` is emitted.
      * Anyone can then send them to the fixed rescue recipient with `rescueUnaccounted`.
      * The gibs fee is `available` times the fee rate, rounded down. The partner fee is `available` times the
