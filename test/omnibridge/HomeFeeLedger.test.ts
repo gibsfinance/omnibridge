@@ -51,7 +51,8 @@ describe('HomeFeeLedger', () => {
 
     describe('construction', () => {
         it('fixes constants, mediators, collector and rescue recipient', async () => {
-            expect(await ledger.RATE_BASE_E18()).to.equal(10n ** 18n)
+            // RATE_BASE is a file level constant, so the contract exposes no getter for it
+            expect(ledger.interface.hasFunction('RATE_BASE_E18')).to.equal(false)
             expect(ledger.interface.hasFunction('MAXIMUM_FEE_RATE_E18')).to.equal(false)
             expect(ledger.interface.hasFunction('MAXIMUM_PARTNER_RATE_E18')).to.equal(false)
             expect(await ledger.isMediator(mediator)).to.equal(true)
@@ -59,6 +60,11 @@ describe('HomeFeeLedger', () => {
             expect(await ledger.isMediator(stranger)).to.equal(false)
             expect(await ledger.gibsCollector()).to.equal(collector.address)
             expect(await ledger.rescueRecipient()).to.equal(vault.address)
+        })
+        it('emits Delivered with the signature the indexers expect', async () => {
+            // the field names may change, the types and their order may not: a changed signature changes the topic hash
+            expect(ledger.interface.getEvent('Delivered').topicHash)
+                .to.equal(hre.ethers.id('Delivered(address,address,address,uint256,uint256,uint256,address)'))
         })
         it('rejects bad arguments', async () => {
             const factory = await hre.ethers.getContractFactory('HomeFeeLedger')
@@ -296,6 +302,35 @@ describe('HomeFeeLedger', () => {
             expect(await wNative.balanceOf(ledger)).to.equal(amount)
             expect(await hre.ethers.provider.getBalance(ledger)).to.equal(0n)
         })
+        it('credits native coin when the send fails and the re-wrap fails too', async () => {
+            // the unwrap works, the recipient refuses native coin, and the wrapped token refuses to be re-wrapped
+            const refusingWrap = await (await hre.ethers.getContractFactory('MockRefusingWNative')).deploy()
+            const guarded = await (await hre.ethers.getContractFactory('HomeFeeLedger')).deploy(
+                [mediator], refusingWrap, collector, vault,
+            )
+            const guardedAddress = await guarded.getAddress()
+            const rejecting = await (await hre.ethers.getContractFactory('MockPayoutReceiver')).deploy()
+            const rejectingAddress = await rejecting.getAddress()
+            await refusingWrap.deposit({ value: amount })
+            await refusingWrap.transfer(mediator, amount)
+            await refusingWrap.setRefusingDeposits(true)
+            const stuck = amount - 3_000n
+            await expect(mediator.deliver(refusingWrap, guarded, amount, amount, instruction(rejectingAddress, { unwrap: true })))
+                .to.emit(guarded, 'Credited').withArgs(ZERO, rejectingAddress, stuck, 2n)
+            expect(await guarded.owed(ZERO, rejectingAddress)).to.equal(stuck)
+            expect(await guarded.totalOwed(ZERO)).to.equal(stuck)
+            expect(await guarded.owed(refusingWrap, rejectingAddress)).to.equal(0n)
+            expect(await hre.ethers.provider.getBalance(guardedAddress)).to.equal(stuck)
+            // the native coin is accounted for, so a rescue takes only coin that arrived by force
+            await hre.network.provider.send('hardhat_setBalance', [guardedAddress, ethers.toBeHex(stuck + 100n)])
+            await expect(guarded.rescueUnaccounted(ZERO)).to.changeEtherBalances([guarded, vault], [-100n, 100n])
+            await expect(guarded.rescueUnaccounted(ZERO)).to.be.revertedWithCustomError(guarded, 'NothingToPay')
+            // once the recipient accepts native coin, it claims the credit
+            await rejecting.setAccepting(true)
+            await expect(rejecting.claimNative(guardedAddress)).to.changeEtherBalance(rejecting, stuck)
+            expect(await guarded.owed(ZERO, rejectingAddress)).to.equal(0n)
+            expect(await guarded.totalOwed(ZERO)).to.equal(0n)
+        })
         it('pays wrapped tokens when unwrap is set for another token', async () => {
             await deliver(instruction(recipient.address, { unwrap: true }))
             expect(await token.balanceOf(recipient)).to.equal(amount - 3_000n)
@@ -401,7 +436,8 @@ describe('HomeFeeLedger', () => {
             await expect(ledger.rescueUnaccounted(ZERO)).to.be.revertedWithCustomError(ledger, 'NothingToPay')
         })
         it('withdraws a native entry with a call', async () => {
-            // no code path credits native coin today, so plant owed (slot 2) and totalOwed (slot 3) entries
+            // a failed unwrap credits native coin now, but this test plants owed (slot 2) and totalOwed (slot 3) entries
+            // directly, so it tests withdrawTo on its own
             const owedSlot = ethers.keccak256(coder.encode(['address', 'bytes32'], [user.address,
                 ethers.keccak256(coder.encode(['address', 'uint256'], [ZERO, 2]))]))
             const totalSlot = ethers.keccak256(coder.encode(['address', 'uint256'], [ZERO, 3]))

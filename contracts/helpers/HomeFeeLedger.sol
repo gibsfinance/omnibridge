@@ -107,8 +107,6 @@ library InboundInstruction {
 contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
     using SafeERC20 for IERC20;
 
-    /// @notice The base for every rate. 1e18 is 100 percent.
-    uint256 public constant RATE_BASE_E18 = RATE_BASE;
     /// @notice The gas given to a native coin payout to an inbound recipient.
     uint256 public constant NATIVE_PAYOUT_GAS = 100_000;
 
@@ -140,6 +138,12 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         GibsFee,
         PartnerFee,
         FailedPayout
+    }
+
+    /// @dev How a payout to a recipient is made. `UnwrappedNative` only applies to the wrapped native token.
+    enum PayoutForm {
+        Token,
+        UnwrappedNative
     }
 
     /// @notice The wrapped native token (WPLS).
@@ -184,14 +188,15 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         uint256 sent,
         address partner
     );
-    /// @notice Emitted when an inbound delivery is split and paid.
+    /// @notice Emitted when an inbound delivery is split. `toRecipient` is the amount meant for the recipient,
+    /// before any failed payout. A failed payout is credited in the ledger, so `toRecipient` is not always paid.
     event Delivered(
         address indexed mediator,
         address indexed token,
         address indexed recipient,
         uint256 value,
         uint256 available,
-        uint256 paid,
+        uint256 toRecipient,
         address partner
     );
     /// @notice Emitted when an inbound delivery leaves tokens outside the ledger.
@@ -324,7 +329,7 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
      * The gibs fee is `available` times the fee rate, rounded down. The partner fee is `available` times the
      * partner rate, rounded down. Both are credited to the ledger. The rest is paid to the recipient.
      * If the payment fails for any reason, the rest is credited to the recipient in the ledger.
-     * A failed native unwrap credits the wrapped token.
+     * A failed native payment credits the wrapped token, or native coin when the coin could be neither sent nor re-wrapped.
      * @param token the token the mediator delivered.
      * @param value the amount the mediator says it delivered.
      * @param data `abi.encode(address recipient, bool unwrap, uint256 feeRateE18, address partner, uint256 partnerRateE18)`.
@@ -351,10 +356,25 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
 
         uint256 gibsFee = Math.mulDiv(available, instruction.feeRateE18, RATE_BASE);
         uint256 partnerFee = Math.mulDiv(available, instruction.partnerRateE18, RATE_BASE);
-        uint256 rest = available - gibsFee - partnerFee;
+        uint256 toRecipient = available - gibsFee - partnerFee;
         _creditFees(token, gibsFee, instruction.partner, partnerFee);
-        if (rest > 0) _pay(token, instruction.recipient, rest, instruction.unwrap);
-        emit Delivered(msg.sender, token, instruction.recipient, value, available, rest, instruction.partner);
+        if (toRecipient > 0) _pay(token, instruction.recipient, toRecipient, _payoutForm(token, instruction));
+        emit Delivered(msg.sender, token, instruction.recipient, value, available, toRecipient, instruction.partner);
+    }
+
+    /**
+     * @dev Native coin is only paid for the wrapped native token. Any other token is paid as itself.
+     * @param token the token being delivered.
+     * @param instruction the decoded instruction, whose `unwrap` flag asks for native coin.
+     * @return form how the payout is made.
+     */
+    function _payoutForm(address token, InboundInstruction.Instruction memory instruction)
+        internal
+        view
+        returns (PayoutForm form)
+    {
+        if (instruction.unwrap && token == address(wNative)) return PayoutForm.UnwrappedNative;
+        return PayoutForm.Token;
     }
 
     function _skip(address token, uint256 value, SkipReason reason) internal {
@@ -372,43 +392,65 @@ contract HomeFeeLedger is ReentrancyV2, IERC20Receiver {
         return free < value ? free : value;
     }
 
+    /**
+     * @dev Credits the fees to their accounts. A fee of zero is not credited, so it emits no event.
+     * @param token the token the fees are in.
+     * @param gibsFee the gibs fee, credited to `gibsCollector`.
+     * @param partner the partner account. Unused when `partnerFee` is zero.
+     * @param partnerFee the partner fee, credited to `partner`.
+     */
     function _creditFees(address token, uint256 gibsFee, address partner, uint256 partnerFee) internal {
-        if (gibsFee > 0) {
-            owed[token][gibsCollector] += gibsFee;
-            emit Credited(token, gibsCollector, gibsFee, CreditReason.GibsFee);
-        }
-        if (partnerFee > 0) {
-            owed[token][partner] += partnerFee;
-            emit Credited(token, partner, partnerFee, CreditReason.PartnerFee);
-        }
-        totalOwed[token] += gibsFee + partnerFee;
-    }
-
-    /// @dev Pays the recipient. Credits the recipient in the ledger when the payment fails. Never reverts.
-    function _pay(address token, address recipient, uint256 amount, bool unwrap) internal {
-        bool paid = unwrap && token == address(wNative)
-            ? _unwrapAndSend(recipient, amount)
-            : _tryTransfer(token, recipient, amount);
-        if (paid) return;
-        owed[token][recipient] += amount;
-        totalOwed[token] += amount;
-        emit Credited(token, recipient, amount, CreditReason.FailedPayout);
+        if (gibsFee > 0) _credit(token, gibsCollector, gibsFee, CreditReason.GibsFee);
+        if (partnerFee > 0) _credit(token, partner, partnerFee, CreditReason.PartnerFee);
     }
 
     /**
-     * @dev Unwraps and sends native coin. Returns false with the wrapped tokens still held when it cannot.
-     * When the send fails after the unwrap, the coin is wrapped again.
-     * Should the wrap fail as well, the coin stays here outside the ledger and anyone can send it to the rescue recipient.
+     * @dev Adds `amount` to what `account` can withdraw of `token`, and to `totalOwed` for `token`.
+     * The zero address as `token` means native coin.
+     * @param token the token credited, or the zero address for native coin.
+     * @param account the account that can withdraw the amount.
+     * @param amount the amount credited.
+     * @param reason what the credit is for, as emitted in `Credited`.
      */
-    function _unwrapAndSend(address recipient, uint256 amount) internal returns (bool) {
+    function _credit(address token, address account, uint256 amount, CreditReason reason) internal {
+        owed[token][account] += amount;
+        totalOwed[token] += amount;
+        emit Credited(token, account, amount, reason);
+    }
+
+    /**
+     * @dev Pays the recipient in the given form. When the payment fails, credits the recipient in the ledger
+     * instead, in the token the coin is held in. Never reverts.
+     * @param token the token being paid.
+     * @param recipient the account to pay.
+     * @param amount the amount to pay.
+     * @param form whether to pay the token as it is, or as native coin.
+     */
+    function _pay(address token, address recipient, uint256 amount, PayoutForm form) internal {
+        if (form == PayoutForm.UnwrappedNative) return _payUnwrapped(recipient, amount);
+        if (_tryTransfer(token, recipient, amount)) return;
+        _credit(token, recipient, amount, CreditReason.FailedPayout);
+    }
+
+    /**
+     * @dev Unwraps the wrapped native token and sends the coin to the recipient. Never reverts.
+     * The coin is held in one of three places, and the credit follows it:
+     * the wrapped token when the unwrap fails, the native coin when the send fails and the wrap also fails,
+     * and the wrapped token again when the send fails and the coin is wrapped back.
+     * @param recipient the account to pay.
+     * @param amount the amount to pay, in wrapped native tokens.
+     */
+    function _payUnwrapped(address recipient, uint256 amount) internal {
         (bool unwrapped,) = address(wNative).call(abi.encodeCall(IWNative.withdraw, (amount)));
-        if (!unwrapped) return false;
+        if (!unwrapped) {
+            _credit(address(wNative), recipient, amount, CreditReason.FailedPayout);
+            return;
+        }
         (bool sent,) = recipient.call{gas: NATIVE_PAYOUT_GAS, value: amount}("");
-        if (sent) return true;
+        if (sent) return;
         (bool wrapped,) = address(wNative).call{value: amount}(abi.encodeCall(IWNative.deposit, ()));
-        if (wrapped) return false;
-        // The coin is stuck and unaccounted. Count the recipient as paid so the wrapped token is not credited twice.
-        return true;
+        address heldToken = wrapped ? address(wNative) : address(0);
+        _credit(heldToken, recipient, amount, CreditReason.FailedPayout);
     }
 
     /// @dev A token transfer that accepts tokens with no return value and never reverts or copies a long reply.

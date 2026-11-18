@@ -16,6 +16,15 @@ contract MockPayoutReceiver {
         accepting = value;
     }
 
+    /**
+     * @dev Calls `withdraw(address(0))` on a HomeFeeLedger, so this contract receives its native coin credit.
+     * @param ledger the ledger holding the credit.
+     */
+    function claimNative(address ledger) external {
+        (bool success,) = ledger.call(abi.encodeWithSignature("withdraw(address)", address(0)));
+        require(success, "claim failed");
+    }
+
     receive() external payable {
         require(accepting, "not accepting");
     }
