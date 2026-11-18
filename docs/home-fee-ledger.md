@@ -111,7 +111,9 @@ The mediator ignores a failed callback. If `onTokenBridged` reverted, the tokens
 | No free balance is available | Same as above. | `Skipped` with reason `NothingAvailable` |
 | A second delivery starts while one is running | Same as above. | `Skipped` with reason `Reentrant` |
 | The payment to the recipient fails, for any reason | The ledger credits the rest to the recipient instead. The recipient withdraws it later. | `Credited` with reason `FailedPayout` |
-| The native PLS payment fails after the unwrap | The ledger wraps the PLS again and credits WPLS, not PLS. | `Credited` with reason `FailedPayout` |
+| The unwrap of WPLS fails | The recipient is credited WPLS. | `Credited` with reason `FailedPayout` |
+| The native PLS payment fails after the unwrap, and the ledger wraps the PLS again | The recipient is credited WPLS, not PLS. | `Credited` with reason `FailedPayout` |
+| The native PLS payment fails after the unwrap, and the wrap back also fails | The PLS stays in the ledger and the recipient is credited PLS. Nothing is left outside `totalOwed`, so a rescue cannot take it. | `Credited` with reason `FailedPayout`, token zero |
 
 The ledger never pays out more than it received. It uses the smaller of two numbers: the `value` that the mediator reports, and the balance that the ledger owes to nobody.
 
@@ -131,7 +133,7 @@ function withdrawTo(address token, address to) external
 - With nothing owed, the call reverts with `NothingToPay`.
 - Fees are in the token that was bridged. Fees from `relayNative` and from WPLS deliveries are credited in WPLS, not PLS.
 
-Read a balance with `owed(address token, address account)`. Read the sum of all balances of one token with `totalOwed(address token)`. The zero address as `token` means native PLS. No code path credits native PLS today.
+Read a balance with `owed(address token, address account)`. Read the sum of all balances of one token with `totalOwed(address token)`. The zero address as `token` means native PLS. Native PLS is credited in one case only: the PLS cannot be sent to the recipient and cannot be wrapped back. The recipient then withdraws it with `withdraw(0x0)` once it can accept PLS. Native PLS is never credited any other way.
 
 ## Events to watch
 
@@ -140,22 +142,41 @@ Read a balance with `owed(address token, address account)`. Read the sum of all 
 | `Credited(address indexed token, address indexed account, uint256 amount, CreditReason reason)` | The ledger credits an account. `reason` is `GibsFee` (0), `PartnerFee` (1) or `FailedPayout` (2). |
 | `Withdrawn(address indexed token, address indexed account, address indexed to, uint256 amount)` | An account withdraws. |
 | `Relayed(address indexed mediator, address indexed token, address indexed sender, address receiver, uint256 received, uint256 sent, address partner)` | An outbound transfer reaches the mediator. |
-| `Delivered(address indexed mediator, address indexed token, address indexed recipient, uint256 value, uint256 available, uint256 paid, address partner)` | An inbound transfer is split and paid. |
+| `Delivered(address indexed mediator, address indexed token, address indexed recipient, uint256 value, uint256 available, uint256 toRecipient, address partner)` | An inbound transfer is split. `toRecipient` is the amount meant for the recipient, before any failed payout. |
 | `Skipped(address indexed mediator, address indexed token, uint256 value, SkipReason reason)` | An inbound transfer stays outside the ledger. `reason` is `MalformedData` (0), `ZeroRecipient` (1), `NothingAvailable` (2) or `Reentrant` (3). |
 | `Rescued(address indexed token, address indexed to, uint256 amount)` | Tokens that were outside the ledger go to `rescueRecipient`. |
 | `MediatorAllowed(address indexed mediator)` | Once per mediator, at deployment. |
 
-To total your partner fees, sum `Credited` events where `account` is your partner account and `reason` is `PartnerFee`. `Delivered.paid` is the amount meant for the recipient, even when the payment failed.
+To total your partner fees, sum `Credited` events where `account` is your partner account and `reason` is `PartnerFee`. `Delivered.toRecipient` is the amount meant for the recipient, even when the payment failed and was credited. The name was `paid` before; the topic hash did not change, because only the field name moved.
 
 ## What nobody can do
 
 There is no admin. No function sets a rate, a partner, the collector, the rescue recipient, the wrapped token or the mediator list. The contract has no pause and no upgrade path. Anyone can call `rescueUnaccounted(address token)`. It sends the part of the balance that is not owed to anyone to `rescueRecipient` and never touches `totalOwed`.
 
+## Deploying
+
+The task `deploy-homefeeledger` deploys the ledger. It accepts two chains:
+
+| Chain | Network | Flag | Defaults |
+|---|---|---|---|
+| 943 | PulseChain testnet v4 | none. `--allow-mainnet` is refused here | mediator `0x6B08a50865aDeCe6e3869D9AfbB316d0a0436B6c`, wrapped native `0x70499adEBB11Efd915E3b69E700c331778628707` |
+| 369 | PulseChain mainnet | `--allow-mainnet` is required. Without it, the task refuses | mediator `0x4fD0aaa7506f3d9cB8274bdB946Ec42A1b8751Ef` (the home mediator for the Ethereum route), wrapped native WPLS `0xA1077a294dDE1B09bB078844df40758a5D0f9a27` |
+
+Both chains use the collector and rescue recipient `0xAF2ce0189f46f5663715b0b9ED2a10eA924AB9B0`. Any other chain is refused. The plan is built by `resolveDeployPlan` in `tasks/homefeeledger-deploy-plan.ts`, which makes no transaction and needs no node. It is covered by `test/omnibridge/HomeFeeLedgerDeployPlan.test.ts`.
+
+Checks read from `https://rpc.pulsechain.com` on 2026-11-17 (read only, nothing was sent):
+
+- Mediator `0x4fD0…51Ef`: contract code present, at the pinned block 27,540,000 and at the latest block. Its `bridgeContract()` is `0x6ef79FD6…8b2b`, which has contract code. Its `mediatorContractOnOtherSide()` is `0x1715a3E4…A10D`. It maps Ethereum USDC to PulseChain USDC `0x15D3…1f07` (`isTokenRegistered` is true).
+- WPLS `0xA107…0F9a27`: contract code present. `symbol()` returns `WPLS`.
+- Collector `0xAF2c…B9B0`: no contract code. It is an account (nonce 167). That is expected for a wallet, so the deploy check does not require code for it.
+
+The deploy task checks for code at each mediator and at the wrapped native token before it sends anything.
+
 ## Known limits and open items
 
-- **Not deployed and not audited.** The task `tasks/deploy-homefeeledger.ts` deploys to PulseChain testnet v4 only.
+- **Not deployed and not audited.** See Deploying below for the chains the task accepts.
 - **Token payout gas is not capped.** On the inbound path, the payment to the recipient gives the token contract all the remaining gas. A native PLS payment is capped at `NATIVE_PAYOUT_GAS`, 100,000 gas. A token that burns all the gas can make the callback run out of gas. Then the delivery stays outside the ledger until someone calls `rescueUnaccounted`.
-- **Inbound tests use a stand-in for the bridge.** The fork test calls `onTokenBridged` from the real mediator address, but no real bridge message carried it. `_receiverCallback` in `contracts/upgradeable_contracts/BasicOmnibridge.sol` calls the receiver this way and ignores the result.
+- **Most inbound tests use a stand-in for the bridge.** The unit tests and most fork cases call `onTokenBridged` from the mediator address. One fork case runs the real flow: the real home bridge calls the real home mediator's `handleBridgedTokensAndCall`, which mints to the ledger and calls `onTokenBridged` through `_receiverCallback` in `contracts/upgradeable_contracts/BasicOmnibridge.sol`. That case sets only the bridge's `messageSender` storage slot by hand, which the real bridge sets while it runs a message. It reads the value back through `messageSender()` before the call, and it restores the slot after.
 - **The mediator reports the amount before its own fee.** The ledger handles this, because it uses the smaller of `value` and its free balance.
 - **No PLS balances.** Native PLS can only enter the ledger from WPLS during an unwrap. PLS forced in by other means is outside the ledger, and `rescueUnaccounted` sends it to `rescueRecipient`.
 - **No refunds through the ledger.** A malformed inbound transfer is not sent back. Anyone can rescue it to `rescueRecipient`, and the owner of that account returns it by hand.

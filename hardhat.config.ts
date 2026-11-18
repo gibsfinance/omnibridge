@@ -134,9 +134,7 @@ const config: HardhatUserConfig = {
       url: process.env.RPC_943 || 'https://rpc.v4.testnet.pulsechain.com',
     },
     pulsechain: {
-      accounts: {
-        mnemonic: process.env.MNEMONIC || HARDHAT_NETWORK_MNEMONIC,
-      },
+      accounts: liveAccounts,
       url: process.env.RPC_369 || 'https://rpc.pulsechain.com',
     },
     bsc: {

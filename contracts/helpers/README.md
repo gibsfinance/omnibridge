@@ -84,6 +84,14 @@ So after its caller check, `onTokenBridged` never reverts:
   Anyone can send them to `rescueRecipient` with `rescueUnaccounted`.
 * If the payment to the recipient fails, the recipient is credited in the ledger.
   When `unwrap` fails, the recipient is credited WPLS, not PLS.
+  When the PLS send fails and the wrap back also fails, the ledger keeps the PLS and the recipient is credited PLS (token zero), so it counts in `totalOwed`.
+
+### Deploying
+
+`npx hardhat deploy-homefeeledger --network pulsechainV4` deploys to PulseChain testnet v4 (943) with the testnet defaults.
+`npx hardhat deploy-homefeeledger --network pulsechain --allow-mainnet` deploys to PulseChain mainnet (369) with the mainnet defaults.
+Without `--allow-mainnet`, chain 369 is refused. The flag on chain 943 is refused too.
+Any other chain is refused. The defaults and checks live in `tasks/homefeeledger-deploy-plan.ts`. Each default can be overridden with `--mediators`, `--wnative`, `--collector` or `--rescue`.
 
 ### Withdrawing
 
